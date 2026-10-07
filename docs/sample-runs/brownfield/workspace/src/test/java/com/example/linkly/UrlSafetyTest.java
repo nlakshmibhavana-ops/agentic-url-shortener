@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.net.http.HttpResponse;
 import java.util.List;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -21,6 +22,8 @@ class UrlSafetyTest {
     @LocalServerPort
     int port;
 
+    @Tag("AC-url_safety-1")
+    @Tag("AC-url_safety-2")
     @Test
     void unsafeUrlsAreRejectedAndNothingIsStored() {
         Http http = new Http(port);

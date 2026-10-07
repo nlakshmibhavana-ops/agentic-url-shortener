@@ -1,20 +1,35 @@
 {
   "requests" : {
-    "release@bdf3408d6437d7e3" : {
+    "release@da2584aa8bad7af0" : {
       "node" : "release",
-      "subject" : "bdf3408d6437d7e3",
-      "summary" : "Cut the release (version, notes) after human approval\nchange: Release 1.0.0 (digest bdf3408d6437d7e3)\nfiles: RELEASE_NOTES.md, VERSION\n[x] all tests pass: 59 passed / 0 failed\n[x] line coverage >= 90.0%: 93.2%\n[x] checkstyle clean: 0 issues\n[x] no security findings: 0 findings\n[x] docs generated: openapi.json, docs/API.md, docs/DESIGN.md, CHANGELOG.md, README.md\n[x] no blocking questions open: []\nValidation evidence:\n[x] smoke: packaged JAR started; GET /healthz -> 200; GET /readyz -> 200; POST /api/v1/links -> 201; GET /Mlh5Zok -> 302; GET /api/v1/links/Mlh5Zok/stats -> 200",
+      "subject" : "da2584aa8bad7af0",
+      "summary" : "Cut the release (version, notes) after human approval\nchange: Release 1.0.0 (digest b8b796082ba4ddd1)\nfiles: RELEASE_NOTES.md, VERSION\n[x] all tests pass: 61 passed / 0 failed\n[x] line coverage >= 90.0%: 93.2%\n[x] checkstyle clean: 0 issues\n[x] no security findings: 0 findings\n[x] docs generated: openapi.json, docs/API.md, docs/DESIGN.md, CHANGELOG.md, README.md\n[x] no blocking questions open: []\n[x] every requirement clause is covered, a constraint, or explicitly descoped: 9 clauses\n[x] every acceptance criterion is proven: linked code + a passing tagged test: 17 criteria, all proven\nValidation evidence:\n[x] smoke: packaged JAR started; GET /healthz -> 200; GET /readyz -> 200; POST /api/v1/links -> 201; GET /3mGJj3o -> 302; GET /api/v1/links/3mGJj3o/stats -> 200\nOutcome digest da2584aa8bad7af0 binds: workspace_tree, change_set, policy_findings, gates, requirements, plan, test_report, review_report, docs, release_readiness",
       "reasons" : [ "high-impact stage 'release'" ],
-      "requested_at" : 1.791328228604E9
+      "required_role" : "release",
+      "evidence" : {
+        "change_set" : "b8b796082ba4ddd1",
+        "docs" : "556739c44f59b720@v1",
+        "gates" : [ "smoke=pass" ],
+        "plan" : "b613cdf9ad6c2a99@v1",
+        "policy_findings" : "4f53cda18c2baa0c",
+        "release_readiness" : "d58982ba418a4c8e@v1",
+        "requirements" : "aad1f4ca72828a0a@v1",
+        "review_report" : "e920927d9f1466cd@v1",
+        "test_report" : "561e5d5c64c5c378@v1",
+        "workspace_tree" : "70b43984d951f59c (42 files)"
+      },
+      "requested_at" : 1.79134064534E9
     }
   },
   "decisions" : {
-    "release@bdf3408d6437d7e3" : {
+    "release@da2584aa8bad7af0" : {
       "status" : "approved",
       "by" : "reviewer",
+      "role" : "release",
+      "authenticated" : "token",
       "comment" : "release evidence reviewed",
-      "decided_at" : 1.791328229917E9,
-      "waited_s" : 1.3
+      "decided_at" : 1.791340646486E9,
+      "waited_s" : 1.1
     }
   }
 }

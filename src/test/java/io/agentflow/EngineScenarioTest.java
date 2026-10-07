@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.agentflow.core.Approvals;
+import io.agentflow.core.Approvers;
 import io.agentflow.core.AuditLog;
 import io.agentflow.core.Json;
 import io.agentflow.engine.Engine;
@@ -42,6 +43,8 @@ class EngineScenarioTest {
         return Engine.create(sc, runs, name + "-test");
     }
 
+    static final Approvers.Approver TESTER = new Approvers.Approver("tester", List.of("change", "data", "release"));
+
     static String execute(Path run, LlmClient llm) {
         return new Engine(run, 4, llm, null).execute();
     }
@@ -57,7 +60,7 @@ class EngineScenarioTest {
             Approvals approvals = new Approvals(run.resolve("approvals.json"), new AuditLog(run.resolve("audit.jsonl"),
                     st.runId));
             for (JsonNode r : approvals.pending()) {
-                approvals.decide(r.get("node").asText(), !reject.contains(r.get("node").asText()), "tester", "");
+                approvals.decide(r.get("node").asText(), !reject.contains(r.get("node").asText()), TESTER, "");
             }
             status = execute(run, llm);
         }

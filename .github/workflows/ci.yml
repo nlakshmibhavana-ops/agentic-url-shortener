@@ -8,6 +8,9 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # Fail closed: in CI generated code must run sandboxed (no network, no home, scrubbed env).
+      AGENTFLOW_SANDBOX: bwrap
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -15,6 +18,12 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
+      - name: Enable the bubblewrap sandbox for generated code
+        # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor; bubblewrap needs them.
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --version
       - name: Warm the Maven repository for the generated projects
         run: ./scripts/prefetch.sh
       - name: Unit tests

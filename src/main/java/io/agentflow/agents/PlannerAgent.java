@@ -188,8 +188,12 @@ public class PlannerAgent implements Agent {
             });
         }
         Set<String> pendingCaps = new HashSet<>();
-        req.get("blocking_open").forEach(q -> Knowledge.question(q.asText()).get("options")
-                .forEach(o -> o.get("adds").forEach(a -> pendingCaps.add(a.asText()))));
+        req.get("blocking_open").forEach(q -> {
+            JsonNode spec = Knowledge.question(q.asText()); // null for a request-specific question
+            if (spec != null) {
+                spec.get("options").forEach(o -> o.get("adds").forEach(a -> pendingCaps.add(a.asText())));
+            }
+        });
         List<String> uncovered = trace.entrySet().stream()
                 .filter(e -> e.getValue().isEmpty() && !e.getKey().equals("performance") && !pendingCaps.contains(e.getKey()))
                 .map(Map.Entry::getKey).toList();

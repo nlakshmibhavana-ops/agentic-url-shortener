@@ -29,6 +29,20 @@ public class ReleaseReadinessAgent implements Agent {
         docs.path("files").forEach(f -> files.add(f.asText()));
         check(checks, "docs generated", !files.isEmpty(), String.join(", ", files));
         check(checks, "no blocking questions open", req.get("blocking_open").isEmpty(), req.get("blocking_open").toString());
+        List<String> undisposed = new ArrayList<>();
+        req.path("clauses").forEach(c -> {
+            String d = c.get("disposition").asText();
+            if (d.equals("unsupported") || (d.equals("supported") && c.path("covered_by").isEmpty())) {
+                undisposed.add(c.get("id").asText() + " (" + d + ")");
+            }
+        });
+        check(checks, "every requirement clause is covered, a constraint, or explicitly descoped",
+                req.has("clauses") && undisposed.isEmpty(), req.path("clauses").size() + " clauses"
+                        + (undisposed.isEmpty() ? "" : "; not covered: " + undisposed));
+        Traceability.Result trace = Traceability.check(ctx.workspace(), ctx.runDir(), req, ctx.store().get("plan"), tests);
+        check(checks, "every acceptance criterion is proven: linked code + a passing tagged test", !trace.rows().isEmpty()
+                && trace.unproven().isEmpty(), trace.rows().size() + " criteria"
+                + (trace.unproven().isEmpty() ? ", all proven" : "; unproven: " + trace.unproven()));
         List<String> risks = new ArrayList<>();
         review.get("latent_defects").forEach(d -> risks.add(d.get("module").asText().replaceAll(".*\\.", "") + "."
                 + d.get("function").asText() + ": " + d.get("detail").asText()));
@@ -38,6 +52,7 @@ public class ReleaseReadinessAgent implements Agent {
         readiness.put("checks", checks);
         readiness.put("ready", ready);
         readiness.put("residual_risks", risks);
+        readiness.put("traceability", trace.rows());
         return new AgentResult().artifact("release_readiness", readiness)
                 .note("ready=" + ready + ", " + risks.size() + " residual risks");
     }

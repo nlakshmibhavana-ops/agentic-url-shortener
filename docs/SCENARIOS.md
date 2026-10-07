@@ -11,11 +11,12 @@ Maven build of a real Spring Boot project, which is where most of the time goes.
 | Planned tasks | 8 | 4 | 2 → 3 after clarification |
 | Nodes succeeded | 16 | 13 | 12 (1 checkpoint superseded) |
 | Retries / rollbacks | 0 / 0 | 1 / 1 | 0 / 0 |
-| MTTR | - | 16 s | - |
+| MTTR | - | 15 s | - |
 | Re-plans / reused nodes | 0 / 0 | 0 / 0 | 1 / 2 |
 | Human actions | 1 approval | 2 approvals | 1 answer + 2 approvals |
-| Product tests (line coverage) | 59 (93.2%) | 11 (96.1%) | 74 (93.9%) |
-| Active time | 137 s | 143 s | 128 s |
+| Product tests (line coverage) | 61 (93.2%) | 11 (96.1%) | 76 (93.9%) |
+| Acceptance criteria proven (code + passing tagged test) | 17/17 | 6/6 | 13/13 |
+| Active time | 126 s | 130 s | 120 s |
 | Release | 1.0.0 | 0.4.2 → 0.5.0 | 1.0.0 → 1.1.0 |
 
 ---
@@ -48,13 +49,15 @@ are synchronisation points; `test`, `review` and `docs` run as the join; `readin
 evidence; `release` is the human-approved diamond.
 
 **Validation.** Per task: one Maven build (compile, Checkstyle, the task's tests). At the join:
-the full suite with JaCoCo (59 passed, 93.2% line coverage), project-wide Checkstyle, a security
+the full suite with JaCoCo (61 passed, 93.2% line coverage), project-wide Checkstyle, a security
 scan on the syntax tree, the OpenAPI contract fetched from **the packaged JAR running on a free
-port** (every designed endpoint must exist), and docs completeness. Readiness checks six criteria;
+port** (every designed endpoint must exist), and docs completeness. Readiness checks eight conditions, including that every request clause is
+covered and that each of the 17 acceptance criteria traces to committed code and a passing
+`@Tag("AC-...")` test;
 release smoke-tests the packaged JAR (health → create → redirect → stats) before asking for approval.
 
 **Output:** a Spring Boot 4 Maven project (config, domain, service, JDBC repository, Flyway
-migration, web layer, home page), 59 tests, `openapi.json`, `docs/API.md`, `docs/DESIGN.md`
+migration, web layer, home page), 61 tests, `openapi.json`, `docs/API.md`, `docs/DESIGN.md`
 (seven ADRs), README, CHANGELOG, RELEASE_NOTES and VERSION.
 
 ---
@@ -67,7 +70,9 @@ constraint: existing clients and the live v0.4 database must keep working.
 
 **Requirement understanding.** Three capabilities. "POST /shorten" (in the security ticket) and
 "click counts" (in the bug) are correctly *not* treated as requests for new link creation or
-analytics: specific capabilities refine generic ones.
+analytics: specific capabilities refine generic ones. All six clauses have a disposition: five
+`supported` and one `constraint` ("existing clients and the production database ... must keep
+working"), which the black-box regression and migration tests enforce.
 
 **Codebase reasoning** (`analyze`, JavaParser over the existing sources):
 
@@ -94,15 +99,23 @@ legacy app all eight fail, including the concurrent-click test, which reproduces
    links with a default 30-day expiry**. Every fresh-database test passes, but
    `MigrationTest.upgradesAnExistingDatabaseWithLiveRows` (a v0.4 database with a real row) fails:
    the old link would silently die after 30 days. The change is **rolled back** and the failure
-   becomes the next attempt's feedback.
-2. Candidate 2 adds the column as nullable, with no backfill, and passes all gates. `DATA-001` (a
-   new migration against an existing database) then requires **human approval**; the approver sees
-   the digest and the passing build evidence.
-3. On `resume`, the gates are re-checked, then the change is committed.
+   is **diagnosed** from the gate evidence: phase `tests`, failing test
+   `MigrationTest.upgradesAnExistingDatabaseWithLiveRows` (`failure.diagnosed`).
+2. The implementer may only retry with a reviewed change that declares it repairs that
+   diagnosis. Candidate 2 declares `repairs: [{phase: tests, test: MigrationTest}]`
+   (`repair.selected`): it adds the column as nullable, with no backfill, and passes all gates.
+   Had the failure been anything else (a compile error, a different test), no repair would
+   match and the node would stop for a human instead of guessing. `DATA-001` (a new migration
+   against an existing database) then requires **human approval** from an approver with the
+   `data` role. The request shows the passing build evidence and the outcome digest, which
+   binds the whole workspace tree, the change, the policy findings, the gate verdicts and the
+   input artifacts.
+3. On `resume`, the gates re-run and the outcome digest is recomputed; it matches, so the
+   change is committed. (Had anything differed, the approval would have been invalidated.)
 4. `release` bumps `pom.xml` to 0.5.0 (`CHG-002`, protected file), smoke-tests the packaged JAR
    (including "a `javascript:` URL is rejected with 400"), is approved, and ships.
 
-Metrics: 1 retry, 1 rollback (rate 1/7), MTTR 16 s. The defective attempt never reached a human.
+Metrics: 1 retry, 1 rollback (rate 1/7), MTTR 15 s. The defective attempt never reached a human.
 
 ---
 
@@ -136,7 +149,7 @@ The assumptions appear in the report, the design record and the **release notes*
   the raw IP never leaves the method) passes its gates, including a test that dumps the click rows
   and asserts no IP appears, then waits for **approval** under `DATA-001` (Flyway V2 on the live
   database).
-* After approval the join stages re-run on the combined change: 74 tests at 93.9%, docs
+* After approval the join stages re-run on the combined change: 76 tests at 93.9%, docs
   regenerated from the running JAR, 1.1.0 approved.
 
 **If the human answers "raw"**, the plan selects the raw-IP task and **PII-001** blocks its
@@ -162,6 +175,10 @@ Result: released 0.5.0, 11 tests, audit chain intact. 6,485 tokens, 3 retries, 2
 MTTR 16 s, attempt success rate 0.79 (1.0 deterministic). Model time was about 10 minutes; the
 recorded active time is longer because the laptop running the orchestrator was suspended for
 about 13 minutes mid-run (the span durations, measured on the monotonic clock, exclude it).
+
+This recording predates the review-driven changes (diagnosis-driven repair, outcome-bound
+approvals, the sandbox). The governance it shows is unchanged; today the fallback agent would
+start from the primary reviewed change and repair against the diagnosis, as in section 2.
 
 Runs vary. In an earlier recording the expiry change was returned in about 3 minutes but did not
 compile; in this one the model ran away. The token cap was added after diagnosing that risk, and

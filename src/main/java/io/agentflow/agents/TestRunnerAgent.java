@@ -28,6 +28,10 @@ public class TestRunnerAgent implements Agent {
         Path ws = ctx.workspace().root;
         Maven.Result r = ctx.locked(() -> Maven.mvn(ws, 1800, List.of("clean", "test")));
         Map<String, Object> report = new LinkedHashMap<>(readSurefire(ws.resolve("target/surefire-reports")));
+        List<String> passedTests = new ArrayList<>();
+        io.agentflow.core.SurefireReports.read(ws.resolve("target/surefire-reports")).values()
+                .forEach(c -> passedTests.addAll(c.passed()));
+        report.put("passed_tests", passedTests.stream().distinct().sorted().toList());
         Double coverage = lineCoverage(ws.resolve("target/site/jacoco/jacoco.csv"),
                 Playbooks.load(ctx.playbook()).path("package").asText(""));
         int failed = (int) report.get("failed") + (int) report.get("errors");

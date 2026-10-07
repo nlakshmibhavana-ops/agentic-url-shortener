@@ -4,12 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.shortener.service.TokenBucketRateLimiter;
 import java.util.concurrent.atomic.AtomicLong;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 class TokenBucketRateLimiterTest {
 
     private final AtomicLong nanos = new AtomicLong();
 
+    @Tag("AC-rate_limiting-1")
     @Test
     void allowsBurstThenLimitsAndRefills() {
         TokenBucketRateLimiter limiter = new TokenBucketRateLimiter(60, 3, nanos::get, 100);

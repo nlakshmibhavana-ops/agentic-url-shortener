@@ -46,18 +46,30 @@ public final class AppRunner implements AutoCloseable {
         }
     }
 
-    public static AppRunner start(Path workspace, Map<String, String> props, Path dataDir) throws IOException {
+    /** Command line for running the packaged app sandboxed (it keeps the network so it can be reached). */
+    public static List<String> command(Path workspace, int port, String dataName, Map<String, String> props) {
+        Path data = workspace.resolve("target").resolve("agentflow-data").resolve(dataName).toAbsolutePath();
+        List<String> cmd = new ArrayList<>(List.of(Sandbox.javaHome().resolve("bin/java").toString(),
+                "-jar", jar(workspace).toString(), "--server.port=" + port,
+                "--spring.datasource.url=jdbc:h2:file:" + data.resolve("app")));
+        props.forEach((k, v) -> cmd.add("--" + k + "=" + v));
+        return Sandbox.wrap(cmd, workspace, true);
+    }
+
+    public static ProcessBuilder processBuilder(List<String> cmd, Path workspace) {
+        ProcessBuilder pb = new ProcessBuilder(cmd).directory(workspace.toFile());
+        pb.environment().clear();
+        pb.environment().putAll(Sandbox.environment(Map.of()));
+        return pb;
+    }
+
+    public static AppRunner start(Path workspace, Map<String, String> props, String dataName) throws IOException {
         int port;
         try (ServerSocket s = new ServerSocket(0)) {
             port = s.getLocalPort();
         }
-        Files.createDirectories(dataDir);
-        List<String> cmd = new ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-jar", jar(workspace).toString(), "--server.port=" + port,
-                "--spring.datasource.url=jdbc:h2:file:" + dataDir.resolve("app").toAbsolutePath()));
-        props.forEach((k, v) -> cmd.add("--" + k + "=" + v));
         Path log = Files.createTempFile("agentflow-app-", ".log");
-        Process p = new ProcessBuilder(cmd).directory(workspace.toFile()).redirectErrorStream(true)
+        Process p = processBuilder(command(workspace, port, dataName, props), workspace).redirectErrorStream(true)
                 .redirectOutput(log.toFile()).start();
         AppRunner app = new AppRunner(port, p, log);
         long deadline = System.nanoTime() + Duration.ofSeconds(90).toNanos();

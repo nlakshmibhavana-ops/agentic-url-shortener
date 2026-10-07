@@ -415,7 +415,7 @@
 +
 --- /dev/null
 +++ b/src/test/java/com/example/shortener/integration/ApiIntegrationTest.java
-@@ -1,0 +1,170 @@
+@@ -1,0 +1,185 @@
 +package com.example.shortener.integration;
 +
 +import static org.assertj.core.api.Assertions.assertThat;
@@ -427,6 +427,7 @@
 +import java.time.Duration;
 +import java.util.regex.Matcher;
 +import java.util.regex.Pattern;
++import org.junit.jupiter.api.Tag;
 +import org.junit.jupiter.api.BeforeEach;
 +import org.junit.jupiter.api.Test;
 +import org.springframework.beans.factory.annotation.Autowired;
@@ -464,6 +465,9 @@
 +        return m.group(1);
 +    }
 +
++    @Tag("AC-link_creation-1")
++    @Tag("AC-redirect-1")
++    @Tag("AC-analytics-1")
 +    @Test
 +    void createRedirectAndStatsFlow() {
 +        HttpResponse<String> created = create("{\"url\":\"https://example.com/landing\"}");
@@ -482,6 +486,7 @@
 +                + "\",\"clicks\":2}", "{\"host\":\"news.example\",\"clicks\":1}", "{\"host\":\"direct\",\"clicks\":1}");
 +    }
 +
++    @Tag("AC-custom_alias-2")
 +    @Test
 +    void customAliasAndConflict() {
 +        String created = code(create("{\"url\":\"https://example.com\",\"alias\":\"spring-sale\"}"));
@@ -491,6 +496,7 @@
 +        assertThat(clash.body()).contains("\"error\":\"alias_taken\"");
 +    }
 +
++    @Tag("AC-url_safety-1")
 +    @Test
 +    void rejectsUnsafeTarget() {
 +        HttpResponse<String> response = create("{\"url\":\"javascript:alert(document.cookie)\"}");
@@ -517,6 +523,7 @@
 +        assertThat(http.send("DELETE", "/api/v1/links/" + code, null, OTHER).statusCode()).isEqualTo(404);
 +    }
 +
++    @Tag("AC-redirect-2")
 +    @Test
 +    void deleteMakesLinkGone() {
 +        String code = code(create("{\"url\":\"https://example.com\"}"));
@@ -524,6 +531,8 @@
 +        assertThat(http.get("/" + code).statusCode()).isEqualTo(410);
 +    }
 +
++    @Tag("AC-redirect-2")
++    @Tag("AC-expiry-2")
 +    @Test
 +    void expiredLinkReturnsGone() {
 +        String expires = clock.instant().plus(Duration.ofMinutes(5)).toString();
@@ -533,6 +542,7 @@
 +        assertThat(http.get("/" + code).statusCode()).isEqualTo(410);
 +    }
 +
++    @Tag("AC-redirect-2")
 +    @Test
 +    void unknownCodeIs404() {
 +        HttpResponse<String> response = http.get("/doesNotExist");
@@ -540,6 +550,7 @@
 +        assertThat(response.body()).contains("\"error\":\"not_found\"");
 +    }
 +
++    @Tag("AC-reliability-1")
 +    @Test
 +    void idempotencyKeyReplaysOriginal() {
 +        String[] headers = {"X-API-Key", "test-key-1", "Idempotency-Key", "order-42"};
@@ -551,6 +562,7 @@
 +        assertThat(create("{\"url\":\"https://example.org\"}", headers).statusCode()).isEqualTo(422);
 +    }
 +
++    @Tag("AC-rate_limiting-1")
 +    @Test
 +    void rateLimitReturns429WithRetryAfter() {
 +        String[] limits = {"X-API-Key", "test-key-limits"};
@@ -565,12 +577,15 @@
 +        assertThat(create("{\"url\":\"https://example.com\"}", limits).statusCode()).isEqualTo(201);
 +    }
 +
++    @Tag("AC-reliability-2")
++    @Tag("AC-platform-1")
 +    @Test
 +    void healthAndReadiness() {
 +        assertThat(http.get("/healthz").body()).isEqualTo("{\"status\":\"ok\"}");
 +        assertThat(http.get("/readyz").statusCode()).isEqualTo(200);
 +    }
 +
++    @Tag("AC-reliability-3")
 +    @Test
 +    void requestIdIsPropagated() {
 +        HttpResponse<String> echoed = http.get("/healthz", "X-Request-ID", "abc123");
@@ -583,6 +598,83 @@
 +        HttpResponse<String> home = http.get("/");
 +        assertThat(home.statusCode()).isEqualTo(200);
 +        assertThat(home.body()).contains("URL Shortener", "/api/v1/links");
++    }
++}
++
+--- /dev/null
++++ b/src/test/java/com/example/shortener/integration/ClickRecordingTest.java
+@@ -1,0 +1,74 @@
++package com.example.shortener.integration;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import com.example.shortener.domain.Link;
++import com.example.shortener.service.LinkService;
++import com.example.shortener.support.Http;
++import com.example.shortener.support.IntegrationTest;
++import java.net.http.HttpResponse;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.Executor;
++import org.junit.jupiter.api.Tag;
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.TestConfiguration;
++import org.springframework.boot.test.web.server.LocalServerPort;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Import;
++import org.springframework.context.annotation.Primary;
++
++@IntegrationTest
++@Import(ClickRecordingTest.HeldClicks.class)
++class ClickRecordingTest {
++
++    /** A click executor that holds every task until the test releases it. */
++    static final class HeldExecutor implements Executor {
++        final List<Runnable> held = new ArrayList<>();
++
++        @Override
++        public synchronized void execute(Runnable task) {
++            held.add(task);
++        }
++
++        synchronized void releaseAll() {
++            held.forEach(Runnable::run);
++            held.clear();
++        }
++    }
++
++    @TestConfiguration
++    static class HeldClicks {
++        @Bean
++        @Primary
++        HeldExecutor heldClickExecutor() {
++            return new HeldExecutor();
++        }
++    }
++
++    @LocalServerPort
++    int port;
++
++    @Autowired
++    LinkService service;
++
++    @Autowired
++    HeldExecutor clicks;
++
++    @Test
++    @Tag("AC-analytics-2")
++    void theRedirectIsAnsweredBeforeTheClickIsRecorded() {
++        Link link = service.create("https://example.com/held", "held-owner", null, null, null).link();
++
++        HttpResponse<String> response = new Http(port).get("/" + link.code());
++
++        // The response is complete while the click is still queued: recording is off the request path.
++        assertThat(response.statusCode()).isEqualTo(302);
++        assertThat(clicks.held).hasSize(1);
++        assertThat(service.getOwned(link.code(), "held-owner").clickCount()).isZero();
++        clicks.releaseAll();
++        assertThat(service.getOwned(link.code(), "held-owner").clickCount()).isEqualTo(1);
 +    }
 +}
 +

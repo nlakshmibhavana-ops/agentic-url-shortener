@@ -15,9 +15,11 @@ URL shortener service, from scratch
 
 ## Evidence
 
-- [x] all tests pass: 59 passed / 0 failed
+- [x] all tests pass: 61 passed / 0 failed
 - [x] line coverage >= 90.0%: 93.2%
 - [x] checkstyle clean: 0 issues
 - [x] no security findings: 0 findings
 - [x] docs generated: openapi.json, docs/API.md, docs/DESIGN.md, CHANGELOG.md, README.md
 - [x] no blocking questions open: []
+- [x] every requirement clause is covered, a constraint, or explicitly descoped: 9 clauses
+- [x] every acceptance criterion is proven: linked code + a passing tagged test: 17 criteria, all proven

@@ -55,7 +55,7 @@ public final class Gates {
             JsonNode req = g.store().get("requirements");
             boolean open = !req.has("blocking_open") || contains(req.get("blocking_open"), qid);
             String detail = open ? "waiting for a human answer to " + qid + ": "
-                    + Knowledge.question(qid).get("text").asText() : qid + " answered";
+                    + questionText(req, qid) : qid + " answered";
             return new GateResult("", !open, detail, true);
         });
 
@@ -103,22 +103,40 @@ public final class Gates {
             return GateResult.of(true, ids.size() + " tasks; every capability traced to at least one task");
         });
 
-        // One Maven run: compile main + tests, Checkstyle, then the task's declared tests.
+        // One Maven run: compile main + tests, Checkstyle, then the task's declared tests. Every declared
+        // test must exist, and must appear in the execution evidence as run and passed.
         GATES.put("build", (g, a) -> {
+            List<String> expected = g.node().verify();
+            List<String> missing = expected.stream().filter(p -> !g.workspace().exists(p)).toList();
+            if (!missing.isEmpty()) {
+                return GateResult.of(false, "expected tests are missing: " + missing);
+            }
+            List<String> tests = expected.stream().map(Maven::testClass).distinct().toList();
+            Path reports = g.workspace().root.resolve("target/surefire-reports");
+            SurefireReports.clear(reports); // stale reports must never count as evidence
             List<String> args = new ArrayList<>(List.of("test-compile",
                     "org.apache.maven.plugins:maven-checkstyle-plugin:3.6.0:check"));
-            List<String> tests = g.node().verify().stream().filter(g.workspace()::exists).map(Maven::testClass).toList();
             if (!tests.isEmpty()) {
-                args.addAll(List.of("surefire:test",
-                        "-Dtest=" + String.join(",", tests), "-Dsurefire.failIfNoSpecifiedTests=false",
-                        "-Djacoco.skip=true"));
+                args.addAll(List.of("surefire:test", "-Dtest=" + String.join(",", tests), "-Djacoco.skip=true"));
             }
             Maven.Result r = Maven.mvn(g.workspace().root, 900, args);
-            if (r.ok()) {
-                return GateResult.of(true, "compiled, checkstyle clean" + (tests.isEmpty() ? ""
-                        : ", " + summary(r.output(), tests)));
+            Map<String, SurefireReports.ClassResult> results = SurefireReports.read(reports);
+            if (!r.ok()) {
+                List<String> failing = new ArrayList<>();
+                results.values().forEach(cr -> failing.addAll(cr.failed()));
+                return GateResult.of(false, classify(r) + (failing.isEmpty() ? "" : " | failing tests: " + failing));
             }
-            return GateResult.of(false, classify(r));
+            List<String> evidence = new ArrayList<>();
+            for (String t : tests) {
+                SurefireReports.ClassResult cr = results.get(t);
+                if (cr == null || !cr.green()) {
+                    return GateResult.of(false, "no execution evidence that " + t + " ran and passed"
+                            + (cr == null ? " (no report)" : " (" + cr.tests() + " run, " + cr.failures() + " failed)"));
+                }
+                evidence.add(t + " " + cr.passed().size() + "/" + cr.tests());
+            }
+            return GateResult.of(true, "compiled, checkstyle clean" + (evidence.isEmpty() ? ""
+                    : ", executed: " + String.join(", ", evidence)) + "; sandbox " + Sandbox.mode().name().toLowerCase());
         });
 
         GATES.put("tests_pass", (g, a) -> {
@@ -193,7 +211,7 @@ public final class Gates {
             Map<String, String> props = new LinkedHashMap<>();
             book.path("smoke_props").fields().forEachRemaining(e -> props.put(e.getKey(), e.getValue().asText()));
             List<String> log = new ArrayList<>();
-            try (AppRunner app = AppRunner.start(g.workspace().root, props, g.runDir().resolve("smoke"))) {
+            try (AppRunner app = AppRunner.start(g.workspace().root, props, "smoke")) {
                 Map<String, String> saved = new HashMap<>();
                 for (JsonNode step : book.get("smoke")) {
                     String path = step.get("path").asText();
@@ -223,6 +241,16 @@ public final class Gates {
     }
 
     /** Spring path variables are {name}; the design records use the same form. */
+    static String questionText(JsonNode req, String qid) {
+        for (JsonNode q : req.path("questions")) {
+            if (q.path("id").asText().equals(qid)) {
+                return q.path("text").asText();
+            }
+        }
+        JsonNode known = Knowledge.question(qid);
+        return known == null ? qid : known.get("text").asText();
+    }
+
     static String normalise(String endpoint) {
         return endpoint;
     }
@@ -234,16 +262,6 @@ public final class Gates {
             }
         }
         return false;
-    }
-
-    static String summary(String output, List<String> tests) {
-        int total = 0;
-        for (String line : output.split("\n")) {
-            if (line.contains("Tests run:") && !line.contains(" in ")) {
-                total = Integer.parseInt(line.replaceAll(".*Tests run: (\\d+).*", "$1"));
-            }
-        }
-        return tests + (total > 0 ? ": " + total + " tests passed" : " passed");
     }
 
     /** Names the phase that failed and keeps the lines a reviewer (or a model) needs to fix it. */

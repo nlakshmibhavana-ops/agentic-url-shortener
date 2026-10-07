@@ -6,6 +6,7 @@ import java.net.http.HttpResponse;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -18,6 +19,7 @@ class ClickAccuracyTest {
     @LocalServerPort
     int port;
 
+    @Tag("AC-click_accuracy-1")
     @Test
     void concurrentClicksAreNotLost() throws InterruptedException {
         Http http = new Http(port);
@@ -32,6 +34,7 @@ class ClickAccuracyTest {
         assertThat(Http.field(http.get("/info/" + code).body(), "clicks")).isEqualTo("200");
     }
 
+    @Tag("AC-click_accuracy-2")
     @Test
     void redirectIsNotPermanentlyCacheable() {
         Http http = new Http(port);

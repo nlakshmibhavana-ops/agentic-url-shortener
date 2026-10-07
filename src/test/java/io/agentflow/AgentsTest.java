@@ -124,10 +124,42 @@ class AgentsTest {
         store.put("requirement_text", Scenario.load("brownfield").get("requirement").asText(), "scenario", Map.of());
         AgentContext ctx = new AgentContext(new Node("requirements", "stage", "requirements.llm", "r"), store,
                 new Workspace(dir), Json.tree(Map.of("title", "t", "playbook", "linkly")), 1, dir, new ReentrantLock(),
-                new ScriptedLlm(), null, Set.of());
+                new ScriptedLlm(), null, Set.of(), List.of());
         AgentResult r = new LlmRequirementsAgent().run(ctx);
         assertThat(caps(Json.tree(r.artifacts.get("requirements"))))
                 .containsExactly("click_accuracy", "expiry", "url_safety");
         assertThat(r.notes).anyMatch(n -> n.contains("dropped [analytics]"));
+    }
+
+    static JsonNode reqsOf(String text, Map<String, Object> answers) {
+        return Json.tree(RequirementsAgent.build(text, Json.tree(answers), "t").requirements());
+    }
+
+    @Test
+    void everyClauseOfEveryScenarioHasADisposition() {
+        for (String s : List.of("greenfield", "brownfield", "ambiguous")) {
+            JsonNode req = reqs(s, Map.of());
+            assertThat(req.get("clauses")).isNotEmpty();
+            req.get("clauses").forEach(c -> assertThat(c.get("disposition").asText()).as(s + " " + c)
+                    .isIn("supported", "ambiguous", "constraint"));
+        }
+        JsonNode brown = reqs("brownfield", Map.of());
+        assertThat(brown.get("clauses").get(5).get("disposition").asText()).isEqualTo("constraint");
+    }
+
+    @Test
+    void anUnsupportedClauseCannotDisappearAHumanMustDescopeOrStop() {
+        String text = "Shorten links. Also generate QR codes for every link.";
+        JsonNode open = reqsOf(text, Map.of());
+        assertThat(open.get("clauses").get(1).get("disposition").asText()).isEqualTo("unsupported");
+        assertThat(open.get("blocking_open")).extracting(JsonNode::asText).containsExactly("Q-UNSUPPORTED-2");
+
+        JsonNode descoped = reqsOf(text, Map.of("Q-UNSUPPORTED-2", Map.of("option", "descope", "by", "pm")));
+        assertThat(descoped.get("blocking_open")).isEmpty();
+        assertThat(descoped.get("clauses").get(1).get("disposition").asText()).isEqualTo("descoped");
+        assertThat(descoped.get("out_of_scope").toString()).contains("QR codes");
+
+        assertThatThrownBy(() -> reqsOf(text, Map.of("Q-UNSUPPORTED-2", Map.of("option", "stop", "by", "pm"))))
+                .isInstanceOf(AgentException.class).hasMessageContaining("QR codes");
     }
 }

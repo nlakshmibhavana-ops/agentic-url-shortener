@@ -6,7 +6,7 @@ package: com.example.linkly
 coverage_min: 85
 docs:
   app: linkly
-serve_props: {spring.datasource.url: "jdbc:h2:file:{run_dir}/service/linkly"}
+serve_props: {}
 smoke:
   - {method: POST, path: /shorten, json: {url: "https://example.com", expires_in_days: 30}, expect: 200, save: code}
   - {method: GET, path: "/r/{code}", expect: 302}
@@ -176,6 +176,9 @@ tasks:
                         info.put("expires_at", expires == null ? null : ((OffsetDateTime) expires).toInstant().toString());
                         return info;
       - summary: Add a nullable expires_at column (V2 migration), so existing rows stay valid
+        # A reviewed repair for exactly this diagnosis: the upgrade of a live v0.4 database failed.
+        repairs:
+          - {phase: tests, test: MigrationTest}
         ops:
           - {op: write, path: src/main/resources/db/migration/V2__add_expires_at.sql, src: files/src/main/resources/db/migration/V2__add_expires_at.sql}
           - *expiry_code_ops

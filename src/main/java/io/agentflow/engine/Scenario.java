@@ -121,8 +121,10 @@ public final class Scenario {
         n.params.put("candidates", task.get("candidates").asInt());
         task.get("writes").forEach(w -> n.writes.add(w.asText()));
         n.impact = task.get("impact").asText().equals("high") ? Impact.HIGH : Impact.LOW;
-        n.maxAttempts = Math.max(2, task.get("candidates").asInt());
         n.fallbackAgent = task.get("agent").asText().equals("implement.llm") ? "implement" : null;
+        // Room for every reviewed candidate (diagnosis-driven repairs), plus the model's attempt.
+        n.maxAttempts = n.fallbackAgent != null ? Math.max(1, task.get("candidates").asInt()) + 1
+                : Math.max(2, task.get("candidates").asInt());
         n.origin = "plan:v" + planVersion;
         return n;
     }

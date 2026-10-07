@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.example.shortener.domain.Errors;
 import com.example.shortener.service.UrlValidator;
 import java.util.List;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -18,6 +19,7 @@ class DenylistTest {
         return UrlValidator.validate(url, 2048, "http://sho.rt", false, BLOCKED);
     }
 
+    @Tag("AC-domain_denylist-1")
     @ParameterizedTest
     @ValueSource(strings = {"https://evil.example/x", "https://login.evil.example/", "http://PHISH.test"})
     void blocksListedDomainsAndTheirSubdomains(String url) {

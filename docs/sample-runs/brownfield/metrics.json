@@ -1,13 +1,13 @@
 {
-  "active_time_s" : 143.08,
-  "approval_wait_s" : 1.2,
+  "active_time_s" : 130.453,
+  "approval_wait_s" : 1.3,
   "approvals" : 2,
   "attempt_success_rate" : 0.917,
   "attempts" : 12,
   "changes_applied" : 7,
   "invalidations" : 0,
   "llm_tokens" : 0,
-  "mttr_s" : 16.092,
+  "mttr_s" : 14.667,
   "node_success_rate" : 1.0,
   "nodes_failed" : 0,
   "nodes_succeeded" : 13,
@@ -20,18 +20,18 @@
   "rollbacks" : 1,
   "sessions" : 3,
   "stage_latency_ms" : {
-    "analyze" : 495.1,
-    "design" : 9.4,
-    "docs" : 35305.3,
-    "impl.click_accuracy" : 15526.8,
-    "impl.expiry" : 15822.9,
-    "impl.url_validation" : 15325.6,
-    "plan" : 35.5,
-    "readiness" : 7.8,
-    "requirements" : 105.6,
-    "review" : 35257.9,
-    "test" : 35271.9,
-    "tests.regression" : 7537.9
+    "analyze" : 377.5,
+    "design" : 33.1,
+    "docs" : 31983.5,
+    "impl.click_accuracy" : 13903.5,
+    "impl.expiry" : 14585.7,
+    "impl.url_validation" : 14089.7,
+    "plan" : 73.8,
+    "readiness" : 113.5,
+    "requirements" : 133.6,
+    "review" : 31846.2,
+    "test" : 31878.4,
+    "tests.regression" : 6792.7
   },
-  "wall_time_s" : 146.753
+  "wall_time_s" : 134.538
 }

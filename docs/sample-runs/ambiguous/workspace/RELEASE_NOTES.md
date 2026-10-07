@@ -10,12 +10,14 @@ Product ask: safer links, marketing analytics, fast redirects
 
 ## Evidence
 
-- [x] all tests pass: 74 passed / 0 failed
+- [x] all tests pass: 76 passed / 0 failed
 - [x] line coverage >= 90.0%: 93.9%
 - [x] checkstyle clean: 0 issues
 - [x] no security findings: 0 findings
 - [x] docs generated: openapi.json, docs/API.md, docs/DESIGN.md, CHANGELOG.md
 - [x] no blocking questions open: []
+- [x] every requirement clause is covered, a constraint, or explicitly descoped: 2 clauses
+- [x] every acceptance criterion is proven: linked code + a passing tagged test: 13 criteria, all proven
 
 ## Known risks / follow-ups
 

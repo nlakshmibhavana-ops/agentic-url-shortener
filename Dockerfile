@@ -14,6 +14,7 @@ COPY agentflow ./
 COPY playbooks ./playbooks
 COPY fixtures ./fixtures
 COPY scenarios ./scenarios
+COPY config ./config
 COPY scripts ./scripts
 # Warm the Maven repository with everything the generated projects need, so runs build offline.
 RUN ./scripts/prefetch.sh

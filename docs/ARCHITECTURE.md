@@ -49,12 +49,14 @@ flowchart LR
 |---|---|---|
 | **Engine** | `engine/Engine` | Runs the graph and owns acceptance of every agent output. Agents never write to the workspace or decide their own success |
 | **Graph** | `core/Graph` | Explicit DAG: dependencies, readiness, downstream blocking. Validated acyclic after every plan merge |
-| **Gates** | `core/Gates` | Entry gates (may I start?) and exit gates (is the output acceptable?). They run real tools: Maven compile, Checkstyle, JUnit, JaCoCo, the live OpenAPI contract, a smoke test of the packaged JAR |
+| **Gates** | `core/Gates` | Entry gates (may I start?) and exit gates (is the output acceptable?). They run real tools: Maven compile, Checkstyle, JUnit, JaCoCo, the live OpenAPI contract, a smoke test of the packaged JAR. A test gate passes only on Surefire evidence that each intended test class ran and passed (`core/SurefireReports`) |
+| **Sandbox** | `core/Sandbox` | Every build, test and app run of generated code: allowlisted environment (no orchestrator secrets); under bubblewrap also no network (builds), no home or user files, read-only system and Maven cache, only its own workspace writable |
 | **Policy** | `core/Policy` | Evaluates each change set *before* it touches disk. Java security rules work on the syntax tree (JavaParser), not on grep |
-| **Approvals** | `core/Approvals` | Human checkpoints bound to the change's content digest. A named human approver is required |
+| **Approvals** | `core/Approvals`, `core/Approvers` | Human checkpoints bound to the digest of the complete outcome (workspace tree, change, policy findings, gate verdicts, input artifacts). Approvers authenticate with a token (salted hash in `config/approvers.yaml`) and need the role the request requires (`change`, `data`, `release`) |
 | **Context store** | `core/ContextStore` | Versioned artifacts; each version records its producer and input versions. Any output traces back to the request and the human answers |
 | **Audit** | `core/AuditLog` | Append-only JSONL, SHA-256 chained, trace id = run, span per attempt. `agentflow verify` detects edits and deletions |
-| **Workspace** | `core/Workspace` | Applies change sets atomically, confined to the workspace root. Every apply returns an undo log; crash-safe via in-flight logs |
+| **Workspace** | `core/Workspace` | Applies change sets confined to the workspace root: no symlinks followed, file-type and size limits, expected-hash check (the file must still be what the change was planned against), two-phase atomic writes (stage all, then rename each; restore on failure). Every apply returns an undo log; crash-safe via in-flight logs |
+| **Run ownership** | `core/RunLock`, `RunState` | One owner per run via an OS file lock (released if the owner dies, so another process can fail over); a fencing token in `state.json` refuses writes from a stale owner. Audit and approvals are appended under cross-process file locks |
 | **Metrics** | `core/Metrics` | Success rate, retries, rollbacks, MTTR, latency, approvals, re-plans. Computed from the audit trail |
 | **LLM clients** | `llm/OllamaClient`, `llm/ClaudeClient` | Structured output into Java records (Ollama `format` JSON schema; the Anthropic SDK's class-based structured output) |
 
@@ -139,22 +141,33 @@ attempt k  (agent = primary, or fallback on the last attempt / after a provider 
     ▼
 stage artifacts (versioned, with input lineage)
     ▼
-Policy.evaluate(change set) ── block ─► nothing applied ─► retry with the finding as feedback
+Policy.evaluate(change set) ── block ─► nothing applied ─► diagnose ─► retry
     ▼
 [workspace lock] write in-flight undo log → apply (all-or-nothing) → exit gates
-    │                  fail ─► roll back + unstage ─► retry with the build output as feedback
+    │                  fail ─► roll back + unstage ─► diagnose ─► retry (only with a matching repair)
     ▼
 approval needed? (policy "approve" findings or a high-impact node)
     │   pending  ─► keep the verified change parked (pending undo log), WAITING
     │   rejected ─► roll back, FAILED, downstream BLOCKED, safe stop
-    ▼   approved ─► (on resume) re-run the exit gates, then commit
+    ▼   approved ─► (on resume) re-run the gates, recompute the outcome digest; same ─► commit,
+    │                 different ─► approval invalidated, roll back, attempt again
 commit undo log → SUCCEEDED → propagate changed artifacts → maybe merge a new plan
 ```
 
-The exit gate of every implementation task is one Maven invocation: `test-compile`,
-Checkstyle and the task's declared tests (Surefire). It reports which phase failed and keeps
-the compiler errors, Checkstyle violations or assertion messages, which become the next
-attempt's feedback.
+The exit gate of every implementation task is one sandboxed Maven invocation: `test-compile`,
+Checkstyle and the task's declared tests (Surefire). It fails if a declared test file is missing,
+and it reads the Surefire reports afterwards: every declared test class must have run with at
+least one passing, non-skipped test. Stale reports are deleted first, so they can't count.
+
+**Repair is diagnosis-driven.** A failure becomes a structured `Diagnosis` (`core/Diagnosis`):
+phase (`compile`, `lint`, `tests`, `missing_tests`, `policy`, `apply`, `timeout`, ...), failing
+tests, file:line locations and policy rules, recorded as `failure.diagnosed`. The deterministic
+implementer starts with the task's primary change. After its own change fails, it may only use
+a reviewed alternative whose manifest declares that it repairs this diagnosis (for example
+`repairs: [{phase: tests, test: MigrationTest}]`); the choice is recorded as `repair.selected`.
+If nothing matches, it raises `NoRepairException`: the node stops without blind retries and a
+human decides. A timeout retries the same change. A model's failed attempt doesn't count
+against the reviewed change, and the model gets the structured diagnosis in its next prompt.
 
 Rules worth calling out:
 
@@ -162,7 +175,13 @@ Rules worth calling out:
   gates in the sandbox workspace, with the gate results as evidence. A defective first attempt
   (the brownfield backfill migration) is rolled back without bothering a human, and the gates
   are re-run at the moment of approval.
-* **Approval binds to content.** The key is `node@digest`; a different change needs a new approval.
+* **Approval binds to the complete outcome.** The key is `node@outcome-digest`, where the
+  digest covers the whole workspace tree (every file's hash), the change set, the policy
+  findings, the gate verdicts and the versions of the input artifacts (for a release also the
+  test, review, docs and readiness evidence). On resume the gates re-run and the digest is
+  recomputed; anything different invalidates the approval (`approval.invalidated`).
+* **Approvers are authenticated and role-checked.** `approve` needs the approver's token;
+  a `data` approval (a migration on live data) or a `release` needs that role.
 * **Write sets are an autonomy boundary.** An agent may only change the paths its task declared
   (`CHG-003`). Tasks with overlapping write sets are serialised by the planner, like a merge queue.
 * **Bounded everything:** per-node attempts, exponential backoff capped at 2 s, per-run attempt
@@ -191,13 +210,20 @@ human_answers v2 → requirements v2 → impact_analysis v2, design v2 → plan 
 | no longer present | revert and mark `skipped` (`node.superseded`) |
 | can't be reverted safely (a later change touched the same files) | keep it, and record a decision for human review |
 
-**Persistence:** `state.json` is written atomically (temp file and rename) after every scheduling
-step. A crash between apply and commit leaves an `*.inflight.json` undo log, which is rolled back
+**Persistence:** `state.json` is written atomically (temp file, fsync, rename) after every
+scheduling step, and only by the run's current owner (fencing token). A crash between apply and commit leaves an `*.inflight.json` undo log, which is rolled back
 on the next `resume`. A change parked for approval keeps a `*.pending.json` log.
 
 **Concurrency:** workers are virtual threads. A state lock guards graph and node bookkeeping; a
 separate, fair workspace lock is the merge queue, so agents (and model calls) run in parallel
 while builds and change application are serialised.
+
+**Ownership and failover:** `execute` and `answer` first take the run's lock (`runs/<id>/.lock`,
+an OS file lock) and record `owner.json` (host, pid, purpose). A second process gets
+`RunBusyException` naming the owner. If the owner dies, the OS releases the lock; the next
+`resume` takes over, bumps the fencing token, rolls back any in-flight change, resets nodes
+that were running, and continues. The old owner, if it is still alive, can no longer write
+state (`FencedException`). `OwnershipTest` verifies this with a real `SIGKILL`ed process.
 
 ## 5. Governance and guardrails
 
@@ -216,6 +242,21 @@ while builds and change application are serialised.
 | DEP-002 | approve | Adding an allowlisted dependency to an existing project |
 | CHG-004 | approve | Change set larger than the review budget (generated files excluded) |
 | high-impact node | approve | `release` (and any task declared `impact: high`) |
+
+**Requirement coverage.** Every clause of the request (sentences, split on semicolons) gets a
+disposition: `supported` (with the capabilities that cover it), `ambiguous` (a question),
+`constraint` (a condition such as "existing clients must keep working", enforced by the
+regression gates), or `unsupported`. An unsupported clause becomes a blocking question with two
+options, `descope` (recorded as out of scope and in the release notes) or `stop`, so nothing
+the requester asked for can disappear silently. Release readiness checks it.
+
+**Feature-completion proof.** Each acceptance criterion has an id (`AC-<capability>-<n>`), and
+product tests carry the ids they prove as JUnit tags (`@Tag("AC-expiry-2")`). Release readiness
+finds the tags with JavaParser and requires, for every criterion of every delivered capability:
+at least one tagged test that **passed** in the final suite (from the Surefire reports), and the
+production code committed for it (its tasks' committed undo logs, under `src/main`) or the
+existing modules that already implement it. The criterion → code → test table is in the report,
+and it is part of the evidence the release approval is bound to.
 
 Safe stop is triggered by `agentflow stop` (a `STOP` file), Ctrl+C, an exhausted attempt or
 time budget, a failed **critical** node, or a rejected approval. Running attempts are interrupted
@@ -245,7 +286,10 @@ time budget, a failed **critical** node, or a rejected approval. Running attempt
 | One DAG with planner-inserted task nodes, not a fixed pipeline | Decomposition, parallelism and re-planning live in the structure the scheduler runs | A linear stage chain |
 | Artifacts as the only cross-stage channel, versioned with lineage | Makes invalidation mechanical and decisions traceable | A shared mutable map |
 | Human answers are artifacts | Clarification uses the same invalidation/re-plan path as any upstream change | Special-case "restart from requirements" |
-| Approve *after* validation, bind to digest | Humans review evidence, not intentions | Approve-then-apply |
+| Approve *after* validation, bind to the outcome digest | Humans review evidence, not intentions; any later difference invalidates the approval | Approve-then-apply; bind to the diff only |
+| Repairs declared against diagnoses | A retry must address the observed failure, or stop for a human | Next candidate by attempt number |
+| bubblewrap sandbox, environment allowlist always | Generated code is untrusted: no secrets, no network for builds, no user files | Containers per build (heavier; see limitations) |
+| OS file lock + fencing token for run ownership | Crash releases ownership automatically; a stale owner can't corrupt state | PID files (stale after a crash) |
 | Virtual threads + a state lock + a merge-queue workspace lock | Agent and model work runs in parallel; builds see a consistent tree | Per-file locks (tests read across files) |
 | One Maven invocation per task gate (compile + Checkstyle + tests) | About 7 s per task instead of three JVM start-ups; failure phase still reported | Separate gates per tool |
 | Black-box regression tests for test-first brownfield work | Java compiles a module as a unit, so tests that reference not-yet-written classes would break the build; HTTP/migration tests compile against the existing code and fail at runtime until fixed | Unit tests written first (don't compile) |

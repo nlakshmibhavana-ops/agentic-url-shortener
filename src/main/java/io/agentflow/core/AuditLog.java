@@ -43,32 +43,67 @@ public class AuditLog {
     }
 
     public JsonNode record(String event, String actor, String node, String spanId, Map<String, Object> data) {
-        ObjectNode record;
-        synchronized (this) {
-            record = Json.MAPPER.createObjectNode();
-            record.put("seq", ++seq);
-            record.put("ts", Json.now());
-            record.put("trace_id", traceId);
-            record.put("span_id", spanId);
-            record.put("event", event);
-            record.put("actor", actor == null ? "orchestrator" : actor);
-            record.put("node", node);
-            record.set("data", Json.tree(data == null ? Map.of() : data));
-            record.put("prev_hash", prev);
-            record.put("hash", digest(record));
-            prev = record.get("hash").asText();
-            try {
-                Files.writeString(path, Json.write(record) + "\n", StandardCharsets.UTF_8,
-                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
+        ObjectNode record = FileLocks.withLock(path.resolveSibling(path.getFileName() + ".lock"), () -> {
+            synchronized (this) {
+                // Another process (e.g. `approve` while a run executes) may have appended: continue its chain.
+                for (JsonNode last : tail()) {
+                    prev = last.get("hash").asText();
+                    seq = last.get("seq").asLong();
+                }
+                ObjectNode r = Json.MAPPER.createObjectNode();
+                r.put("seq", ++seq);
+                r.put("ts", Json.now());
+                r.put("trace_id", traceId);
+                r.put("span_id", spanId);
+                r.put("event", event);
+                r.put("actor", actor == null ? "orchestrator" : actor);
+                r.put("node", node);
+                r.set("data", Json.tree(data == null ? Map.of() : data));
+                r.put("prev_hash", prev);
+                r.put("hash", digest(r));
+                prev = r.get("hash").asText();
+                try {
+                    Files.writeString(path, Json.write(r) + "\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE,
+                            StandardOpenOption.APPEND, StandardOpenOption.SYNC);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+                return r;
             }
-        }
+        });
         Consumer<JsonNode> l = listener;
         if (l != null) {
             l.accept(record);
         }
         return record;
+    }
+
+    /** The last record on disk (empty list if none). */
+    private List<JsonNode> tail() {
+        if (!Files.exists(path)) {
+            return List.of();
+        }
+        try (java.io.RandomAccessFile f = new java.io.RandomAccessFile(path.toFile(), "r")) {
+            long len = f.length();
+            if (len == 0) {
+                return List.of();
+            }
+            long pos = len - 1;
+            while (pos > 0) {
+                f.seek(pos - 1);
+                if (f.read() == '\n') {
+                    break;
+                }
+                pos--;
+            }
+            f.seek(pos);
+            byte[] buf = new byte[(int) (len - pos)];
+            f.readFully(buf);
+            String line = new String(buf, StandardCharsets.UTF_8).strip();
+            return line.isEmpty() ? List.of() : List.of(Json.parse(line));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     public JsonNode record(String event, String node, Map<String, Object> data) {

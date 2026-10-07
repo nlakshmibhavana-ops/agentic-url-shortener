@@ -17,6 +17,8 @@ linkly v0.4 -> v0.5: security fix, click accuracy fix, link expiry
 - [x] no security findings: 0 findings
 - [x] docs generated: openapi.json, docs/API.md, docs/DESIGN.md, CHANGELOG.md
 - [x] no blocking questions open: []
+- [x] every requirement clause is covered, a constraint, or explicitly descoped: 6 clauses
+- [x] every acceptance criterion is proven: linked code + a passing tagged test: 6 criteria, all proven
 
 ## Known risks / follow-ups
 

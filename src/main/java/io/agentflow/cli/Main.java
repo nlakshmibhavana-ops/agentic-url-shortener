@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.agentflow.core.AppRunner;
 import io.agentflow.core.Approvals;
+import io.agentflow.core.Approvers;
 import io.agentflow.core.AuditLog;
 import io.agentflow.core.Home;
 import io.agentflow.core.Json;
@@ -25,7 +26,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.stream.Stream;
 import picocli.CommandLine;
@@ -42,7 +45,7 @@ import picocli.CommandLine.Parameters;
         description = "Governed agentic SDLC orchestrator.",
         subcommands = {Main.Run.class, Main.Resume.class, Main.Approve.class, Main.Answer.class, Main.Status.class,
             Main.Stop.class, Main.Verify.class, Main.ReportCmd.class, Main.MetricsCmd.class, Main.ListCmd.class,
-            Main.Serve.class, Main.Demo.class})
+            Main.Serve.class, Main.ApproversCmd.class, Main.Demo.class})
 public class Main implements Runnable {
 
     static final boolean COLOR = System.console() != null && System.getenv("NO_COLOR") == null;
@@ -243,14 +246,51 @@ public class Main implements Runnable {
                 System.out.println(Files.readString(diff));
                 choice = ask("Approve? [y/n]: ", List.of("y", "n"));
             }
+            System.out.println(dim("Requires the '" + r.path("required_role").asText("change") + "' role."));
             System.out.print("Comment (optional): ");
             System.out.flush();
             String comment = STDIN.readLine();
-            approvals.decide(node, choice.equals("y"), who, comment == null ? "" : comment.strip());
+            String approverName = who;
+            while (!Approvers.known(approverName)) {
+                System.out.println(dim("'" + approverName + "' is not a registered approver (" + Approvers.file().getFileName()
+                        + "). The demo approver is 'reviewer', token demo-approver-token-not-for-production."));
+                System.out.print("Approver name: ");
+                System.out.flush();
+                String line = STDIN.readLine();
+                if (line == null) {
+                    throw new Approvers.AuthenticationException("no registered approver given");
+                }
+                approverName = line.strip();
+            }
+            while (true) {
+                try {
+                    Approvers.Approver approver = Approvers.authenticate(approverName, token(approverName));
+                    approvals.decide(node, choice.equals("y"), approver, comment == null ? "" : comment.strip());
+                    break;
+                } catch (Approvers.AuthenticationException | IllegalArgumentException e) {
+                    System.out.println(red(e.getMessage()));
+                    if (System.getenv("AGENTFLOW_APPROVER_TOKEN") != null) {
+                        throw e; // a wrong token from the environment won't fix itself
+                    }
+                }
+            }
             System.out.println(choice.equals("y") ? green("Approved.") : red("Rejected: the change will be rolled back."));
             acted = true;
         }
         return acted;
+    }
+
+    /** The approver's token: from AGENTFLOW_APPROVER_TOKEN, else typed without echo. */
+    static String token(String who) {
+        String env = System.getenv("AGENTFLOW_APPROVER_TOKEN");
+        if (env != null && !env.isBlank()) {
+            return env.strip();
+        }
+        if (System.console() != null) {
+            char[] t = System.console().readPassword("Approver token for %s: ", who);
+            return t == null ? "" : new String(t);
+        }
+        throw new Approvers.AuthenticationException("no approver token: set AGENTFLOW_APPROVER_TOKEN");
     }
 
     static Path latestDiff(Path dir, String node) throws IOException {
@@ -325,7 +365,9 @@ public class Main implements Runnable {
         for (JsonNode r : approvals.pending()) {
             System.out.println("\nApproval needed for '" + r.get("node").asText() + "': "
                     + String.join("; ", texts(r.get("reasons"))));
-            System.out.println("  " + AF + " approve " + st.runId + " " + r.get("node").asText() + " --by <your-name>");
+            System.out.println("  " + AF + " approve " + st.runId + " " + r.get("node").asText()
+                    + " --by <approver>   (needs the '" + r.path("required_role").asText("change")
+                    + "' role; token from AGENTFLOW_APPROVER_TOKEN or a prompt)");
         }
         JsonNode req = st.store.get("requirements");
         for (JsonNode qid : req.path("blocking_open")) {
@@ -415,11 +457,13 @@ public class Main implements Runnable {
             Path dir = runDir(run);
             RunState st = new RunState(dir);
             try {
+                Approvers.Approver approver = Approvers.authenticate(by, token(by));
                 JsonNode d = new Approvals(dir.resolve("approvals.json"), new AuditLog(dir.resolve("audit.jsonl"),
-                        st.runId)).decide(node, !reject, by, comment);
-                System.out.println(node + ": " + d.get("status").asText() + " by " + by + ". Run `resume` to continue.");
+                        st.runId)).decide(node, !reject, approver, comment);
+                System.out.println(node + ": " + d.get("status").asText() + " by " + by + " (authenticated, role "
+                        + d.get("role").asText() + "). Run `resume` to continue.");
                 return 0;
-            } catch (IllegalStateException | IllegalArgumentException e) {
+            } catch (IllegalStateException | IllegalArgumentException | Approvers.AuthenticationException e) {
                 System.out.println(red(e.getMessage()));
                 printPending(dir);
                 return 1;
@@ -555,19 +599,43 @@ public class Main implements Runnable {
                 System.out.println(red(err));
                 return 1;
             }
-            List<String> cmd = new ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                    "-jar", AppRunner.jar(ws).toString(), "--server.port=" + port));
+            Map<String, String> props = new LinkedHashMap<>();
             JsonNode book = Playbooks.load(st.scenario.get("playbook").asText());
-            book.path("serve_props").fields().forEachRemaining(e -> cmd.add("--" + e.getKey() + "="
-                    + e.getValue().asText().replace("{run_dir}", dir.toString())));
+            book.path("serve_props").fields().forEachRemaining(e -> props.put(e.getKey(), e.getValue().asText()));
             if (book.path("package").asText().endsWith("shortener")) {
-                cmd.add("--shortener.base-url=http://localhost:" + port);
+                props.put("shortener.base-url", "http://localhost:" + port);
             }
+            List<String> cmd = AppRunner.command(ws, port, "serve", props);
             System.out.println("Serving on " + bold("http://localhost:" + port + "/") + "  (Ctrl+C to stop)");
             System.out.println("  OpenAPI: http://localhost:" + port + "/v3/api-docs");
-            Process p = new ProcessBuilder(cmd).directory(ws.toFile()).inheritIO().start();
+            System.out.println(dim("  sandbox: " + io.agentflow.core.Sandbox.describe()));
+            Process p = AppRunner.processBuilder(cmd, ws).inheritIO().start();
             Runtime.getRuntime().addShutdownHook(new Thread(p::destroy));
             return p.waitFor();
+        }
+    }
+
+    @Command(name = "approvers", description = "register or rotate an approver (prints the token once)")
+    static class ApproversCmd implements Callable<Integer> {
+        @Parameters(index = "0", description = "add")
+        String action;
+
+        @Parameters(index = "1")
+        String name;
+
+        @Option(names = "--roles", split = ",", defaultValue = "change", description = "change,data,release")
+        List<String> roles;
+
+        @Override
+        public Integer call() {
+            if (!action.equals("add")) {
+                System.out.println(red("usage: approvers add <name> --roles change,data,release"));
+                return 2;
+            }
+            String token = Approvers.add(Approvers.file(), name, roles);
+            System.out.println("approver '" + name + "' registered with roles " + roles + " in " + Approvers.file());
+            System.out.println("token (shown once; store it in a password manager): " + token);
+            return 0;
         }
     }
 

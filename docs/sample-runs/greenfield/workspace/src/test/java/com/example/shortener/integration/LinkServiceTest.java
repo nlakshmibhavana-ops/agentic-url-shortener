@@ -3,8 +3,11 @@ package com.example.shortener.integration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.example.shortener.config.ShortenerProperties;
 import com.example.shortener.domain.Errors;
 import com.example.shortener.domain.Link;
+import com.example.shortener.service.CodeGenerator;
+import com.example.shortener.service.LinkRepository;
 import com.example.shortener.service.LinkService;
 import com.example.shortener.support.IntegrationTest;
 import com.example.shortener.support.MutableClock;
@@ -12,6 +15,7 @@ import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -24,12 +28,40 @@ class LinkServiceTest {
     @Autowired
     MutableClock clock;
 
+    @Tag("AC-link_creation-1")
     @Test
     void createAndResolve() {
         Link link = service.create("https://example.com", "svc-owner", null, null, null).link();
         assertThat(service.resolve(link.code()).targetUrl()).isEqualTo("https://example.com");
     }
 
+    @Autowired
+    LinkRepository repo;
+
+    @Autowired
+    ShortenerProperties props;
+
+    @Tag("AC-link_creation-3")
+    @Test
+    void codeCollisionsAreRetriedTransparently() {
+        String taken = service.create("https://example.com/first", "svc-owner", null, null, null).link().code();
+        // A generator whose first two codes collide with an existing link.
+        CodeGenerator colliding = new CodeGenerator() {
+            private int calls;
+
+            @Override
+            public String generate(int length) {
+                return calls++ < 2 ? taken : super.generate(length);
+            }
+        };
+        Link link = new LinkService(repo, colliding, props, clock).create("https://example.com/second", "svc-owner",
+                null, null, null).link();
+        assertThat(link.code()).isNotEqualTo(taken);
+        assertThat(service.resolve(taken).targetUrl()).isEqualTo("https://example.com/first");
+        assertThat(service.resolve(link.code()).targetUrl()).isEqualTo("https://example.com/second");
+    }
+
+    @Tag("AC-custom_alias-2")
     @Test
     void aliasConflict() {
         service.create("https://example.com", "svc-owner", "svc-promo", null, null);
@@ -37,6 +69,8 @@ class LinkServiceTest {
                 .isInstanceOf(Errors.AliasTaken.class);
     }
 
+    @Tag("AC-expiry-1")
+    @Tag("AC-expiry-2")
     @Test
     void expiryMustBeFutureAndIsEnforced() {
         assertThatThrownBy(() -> service.create("https://example.com", "svc-owner", null, clock.instant(), null))
@@ -47,6 +81,7 @@ class LinkServiceTest {
         assertThatThrownBy(() -> service.resolve(link.code())).isInstanceOf(Errors.Gone.class);
     }
 
+    @Tag("AC-reliability-1")
     @Test
     void idempotencyReplayAndConflict() {
         LinkService.Created a = service.create("https://example.com", "svc-owner", null, null, "svc-k1");

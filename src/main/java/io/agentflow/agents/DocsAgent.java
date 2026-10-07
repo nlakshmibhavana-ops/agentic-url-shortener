@@ -32,7 +32,7 @@ public class DocsAgent implements Agent {
             if (err != null) {
                 throw new AgentException(err);
             }
-            try (AppRunner app = AppRunner.start(ctx.workspace().root, Map.of(), ctx.runDir().resolve("docs-app"))) {
+            try (AppRunner app = AppRunner.start(ctx.workspace().root, Map.of(), "docs")) {
                 HttpResponse<String> r = app.request("GET", "/v3/api-docs", null, Map.of());
                 if (r.statusCode() != 200) {
                     throw new AgentException("OpenAPI endpoint returned " + r.statusCode());

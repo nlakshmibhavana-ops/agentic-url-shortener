@@ -8,7 +8,6 @@ docs:
   app: shortener
   readme: files/README.md
 serve_props:
-  spring.datasource.url: jdbc:h2:file:{run_dir}/service/shortener
   shortener.api-keys: dev-key
 smoke_props:
   shortener.api-keys: smoke-key
@@ -227,10 +226,15 @@ tasks:
   - src/main/resources/static/index.html
   - src/test/java/com/example/shortener/integration/ApiIntegrationTest.java
   - src/test/java/com/example/shortener/integration/OpenApiExportTest.java
+  - src/test/java/com/example/shortener/integration/ClickRecordingTest.java
   verify:
   - src/test/java/com/example/shortener/integration/ApiIntegrationTest.java
   - src/test/java/com/example/shortener/integration/OpenApiExportTest.java
+  - src/test/java/com/example/shortener/integration/ClickRecordingTest.java
   ops:
+  - op: write
+    path: src/test/java/com/example/shortener/integration/ClickRecordingTest.java
+    src: files/src/test/java/com/example/shortener/integration/ClickRecordingTest.java
   - op: write
     path: src/main/java/com/example/shortener/web/Dtos.java
     src: files/src/main/java/com/example/shortener/web/Dtos.java

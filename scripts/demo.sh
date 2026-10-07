@@ -6,6 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 AF=./agentflow
 WHO=${APPROVER:-reviewer}
+# Approvals are authenticated: the demo approver's published, demo-only token (config/approvers.yaml).
+export AGENTFLOW_APPROVER_TOKEN=${AGENTFLOW_APPROVER_TOKEN:-demo-approver-token-not-for-production}
 STAMP=${STAMP:-$(date +%H%M%S)}
 
 banner() { printf '\n\033[1;36m==== %s ====\033[0m\n' "$*"; }

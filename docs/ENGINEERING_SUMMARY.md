@@ -5,7 +5,7 @@
 The assignment's critical differentiator is the orchestration layer, so the build order was:
 
 1. **The products first, to a production bar.** The URL shortener (Spring Boot 4, Java 21, JDBC,
-   Flyway; 59 tests, about 93% line coverage, Checkstyle-clean) and a deliberately flawed legacy
+   Flyway; 61 tests, about 93% line coverage, Checkstyle-clean) and a deliberately flawed legacy
    Spring Boot service. They give the orchestrator real code to reason about, real Maven builds
    to run and real defects to catch.
 2. **The governance core next:** the dependency graph, gates that run real tools, policy
@@ -49,7 +49,15 @@ tests, `openapi.json` (fetched from the running JAR, so it can't drift), `docs/A
 | Agent edits a released migration | `DATA-002` block (Flyway checksums) | `PolicyTest` |
 | Agent touches files outside its task | `CHG-003` block | `PolicyTest` |
 | Human chooses a non-compliant option (store raw IPs) | `PII-001` block; humans can't approve past a block | `choosingRawIpStorageIsStoppedByThePrivacyGuardrail` |
-| Approved change differs from what is applied | Approval bound to the change digest; gates re-run at approval time | `Engine.resumePending` |
+| Approved change differs from what is applied | Approval bound to the digest of the complete outcome (tree, change, policy, gates, inputs); gates re-run and the digest recomputed at resume; a difference invalidates it | `Engine.resumePending`, `ApproversTest` |
+| Someone approves as someone else | Token authentication against `config/approvers.yaml` (salted hashes) and role checks (`change`/`data`/`release`) | `ApproversTest` |
+| Generated code reads secrets, the network or user files | Allowlisted environment; bubblewrap: no network for builds, empty home, read-only system and Maven cache | `SandboxTest` |
+| A symlink, oversized or unexpected file, or a concurrent edit corrupts the workspace | No symlinks followed; type, size and op limits; expected-hash check; two-phase atomic writes with restore | `WorkspaceTest` |
+| A test gate passes without the intended tests | Missing test file fails; Surefire reports must show each declared class ran and passed | `BuildGateTest` |
+| A requirement clause silently disappears | Clause dispositions; unsupported clauses block until a human descopes or stops | `AgentsTest` |
+| A feature is "done" without proof | Criterion → code → passing tagged test check in release readiness | the readiness checks in every sample run |
+| Two processes drive one run, or the owner crashes | OS file lock + owner record; fencing token; failover recovery | `OwnershipTest` (real `SIGKILL`) |
+| A retry repeats a failure blindly | Structured diagnosis; only a reviewed repair for that diagnosis may run, else stop for a human | `RepairTest` |
 | Approver rejects | Roll back, node failed, downstream blocked, run halted | `rejectedApprovalRollsBackAndHalts` |
 | LLM outage, malformed or runaway output | Schema-validated structured output; output-token cap; `AgentException` → fallback agent | `llmOutageFallsBackToDeterministicAgents`, `OllamaClientTest`, the live run |
 | Runaway loop or cost | Per-node attempts, per-run attempt and time budgets → safe stop | `attemptBudgetTriggersSafeStop` |
@@ -82,8 +90,9 @@ tests, `openapi.json` (fetched from the running JAR, so it can't drift), `docs/A
 
 ## 4. Assumptions
 
-* A human approval is a named person running `approve` (or answering the prompt). There is no
-  identity provider; the name is recorded, not authenticated.
+* An approver is whoever holds a registered approver token (`./agentflow approvers add`). The
+  registry is a local file, not an identity provider; the demo approver's token is published
+  for the scripted demo and CI and must be removed for real use.
 * The workspace is a sandbox. "Release" means a versioned, smoke-tested, approved artifact;
   deploying it is out of scope.
 * The brownfield system's existing tests are its regression suite, and they are trustworthy.
@@ -105,13 +114,28 @@ tests, `openapi.json` (fetched from the running JAR, so it can't drift), `docs/A
   working, not the model succeeding. The **Claude** path is implemented with the current Anthropic
   Java SDK (structured outputs) and its fallback is tested with a simulated outage, but it has not
   been run live: that needs an API key.
-* Capability vocabulary and questions are a curated catalogue. A requirement outside it is
-  rejected (`no recognisable capability`) rather than mis-handled: safe, but limited.
+* Capability vocabulary and questions are a curated catalogue. A clause outside it becomes an
+  `unsupported` blocking question (descope or stop), never silently dropped. Dispositions work at
+  sentence and semicolon granularity: a sentence that mixes a supported and an unsupported
+  request counts as supported. Keyword matching can also mis-classify phrasing it wasn't
+  written for.
 * Codebase analysis is Java-only (JavaParser) and symbol-based, not a full compiler-grade call graph.
-* Single-process orchestrator: parallelism is virtual threads within one run. No distributed
-  workers or multi-tenant isolation; builds run as local processes with timeouts, not containers.
-* Approver identity is not authenticated; no separation-of-duties policy beyond rejecting
-  `agent`/`system` as approver names.
+* One process owns a run at a time (file lock + fencing, with failover after a crash), and
+  parallelism is virtual threads within it. There are no distributed workers. The lock is a
+  local-filesystem lock: across hosts it needs a shared filesystem with working locks, or a
+  database lease.
+* The sandbox is bubblewrap on Linux. Where user namespaces are unavailable (some containers),
+  `auto` mode falls back to environment scrubbing only and records that in the audit trail;
+  `AGENTFLOW_SANDBOX=bwrap` (used in CI) fails closed instead. There are no CPU or memory limits
+  beyond the build timeout.
+* Approver tokens are long random secrets checked against salted hashes, but there is no SSO,
+  expiry or two-person rule; anyone with file access to `config/approvers.yaml` can register
+  an approver.
+* Traceability is only as good as the tags: the check proves every criterion has linked code
+  and a passing test that claims it, not that the test fully specifies the criterion. A human
+  still reviews the tagged tests (they are in the diff).
+* Diagnosis-driven repair can only choose among reviewed alternatives. A failure no repair
+  matches stops for a human, by design; it does not invent a fix in deterministic mode.
 * Policy rules are heuristics on the syntax tree and text; they are not a substitute for Semgrep,
   gitleaks or a dependency vulnerability scan, which would plug in as more gates.
 
@@ -120,8 +144,9 @@ tests, `openapi.json` (fetched from the running JAR, so it can't drift), `docs/A
 Three layers:
 
 1. **Product tests**, run by the orchestrator's gates inside each generated workspace:
-   * shortener: 59 JUnit tests (unit + Spring Boot integration over real HTTP), about 93% line
-     coverage; 74 after the ambiguous scenario's changes
+   * shortener: 61 JUnit tests (unit + Spring Boot integration over real HTTP), about 93% line
+     coverage; 76 after the ambiguous scenario's changes. Tests carry the acceptance-criterion
+     ids they prove (`@Tag("AC-...")`)
    * linkly: 11 tests after the upgrade (the original 3 plus 8 black-box regression tests)
 
    They cover validation abuse cases (javascript:, data:, credentials, private and metadata IPs,
@@ -129,26 +154,50 @@ Three layers:
    ownership isolation, rate limiting, migrations on databases with live rows, the redirect
    performance budget, and privacy (no raw IP anywhere in the click rows).
 2. **Orchestrator unit tests** (`GraphTest`, `WorkspaceTest`, `PolicyTest`, `AuditContextTest`,
-   `AgentsTest`, `OllamaClientTest`): graph invariants, all-or-nothing apply and path confinement,
-   every policy rule, audit tamper detection, lineage, requirement understanding, planning, model
-   output refinement, and the Ollama client against a fake server.
+   `AgentsTest`, `OllamaClientTest`, `RepairTest`, `ApproversTest`, `SandboxTest`, `OwnershipTest`):
+   * graph invariants and every policy rule
+   * workspace: all-or-nothing apply, path confinement, symlinks, limits, expected hashes, failed writes
+   * audit tamper detection and lineage
+   * requirement understanding, clause dispositions and planning
+   * failure diagnosis and repair selection
+   * approver authentication, roles and outcome binding
+   * sandbox environment and isolation
+   * run ownership against a real killed process, fencing, and a cross-process audit chain
+   * model output refinement, and the Ollama client against a fake server
 3. **Orchestrator end-to-end tests** (`EngineScenarioTest`, `@Tag("scenario")`). These drive whole
    scenarios with a scripted human:
    * all three happy paths, with metric assertions (rollbacks, retries, re-plans, reuse, parallel overlap)
+   * the strict build gate against a real Maven build (`BuildGateTest`: missing and skipped tests fail)
    * PII block, rejected approval, safe stop and resume, budget exhaustion, crash recovery
    * LLM outage fallback
 
 `mvn test` runs everything; `mvn test -DexcludedGroups=scenario` runs the unit layer in seconds.
 CI runs both layers and the CLI demo on every push.
 
-## 7. What I would do next
+## 7. Review feedback and how it was addressed
+
+| # | Feedback | Change | Verified by |
+|---|---|---|---|
+| 1 | Repair is predefined candidate selection | Failures become a structured diagnosis (phase, tests, locations, rules). The deterministic agent may only apply a reviewed repair declared for that diagnosis, else it stops for a human (`NoRepairException`). `failure.diagnosed` and `repair.selected` are audited. The model gets the diagnosis | `RepairTest` (real gate output), brownfield run |
+| 2 | Unsupported requirements can disappear | Every clause gets a disposition (supported, ambiguous, constraint, unsupported). Unsupported clauses are blocking questions: descope or stop. A readiness check and a report table | `AgentsTest` |
+| 3 | Builds inherit the environment | `core/Sandbox`: allowlisted environment always. bubblewrap: no network for builds, empty home, read-only system, JDK and Maven cache, and only the workspace writable. CI runs fail-closed | `SandboxTest` |
+| 4 | Workspace safety | Symlinks refused, file-type, size and op limits, expected-hash check, and two-phase atomic writes with restore on failure | `WorkspaceTest` |
+| 5 | Approvals don't bind the outcome | The approval digest covers the workspace tree, change, policy findings, gate verdicts and input artifact versions (release: plus test, review, docs and readiness). It is recomputed on resume and invalidated on any difference | `ApproversTest`, `Engine.resumePending` |
+| 6 | No feature-completion proof | Criterion ids plus `@Tag("AC-...")` on product tests. Release readiness requires linked production code and a passing tagged test for every criterion. Two missing tests were added (code-collision retry, click recording off the request thread) | readiness checks in all three runs |
+| 7 | Approver identity is self-declared | Token-authenticated approvers (salted SHA-256, constant-time compare), roles per request, and `approvers add` | `ApproversTest` |
+| 8 | Concurrency is process-local | OS file lock plus owner record per run, a fencing token in the state, fsync'd atomic state writes, and cross-process locks for audit and approvals. Recovery after a crash | `OwnershipTest` (a child JVM is `SIGKILL`ed, then another process takes over) |
+| 9 | Test gates can pass without the tests | Missing declared tests fail. Surefire reports must show each declared class ran with passing, non-skipped tests, and stale reports are cleared | `BuildGateTest` |
+
+## 8. What I would do next
 
 * Run larger local models (14B+) and Claude against the scenarios and track first-attempt success
   per model as an eval baseline (7B: 0 of 3 implementation attempts accepted). Add an eval set of requirements outside the catalogue.
 * Replace the heuristic scanners with real tools (Semgrep, gitleaks, OWASP dependency-check) as
   gates; add mutation testing (PIT) as a gate on test-authoring tasks.
 * Real identities for approvers (OIDC) and a two-person rule for data changes and releases.
-* Run each attempt's build in an isolated container; distribute workers behind a queue with the
-  state store in PostgreSQL.
+* cgroup CPU/memory limits for sandboxed builds; distribute workers behind a queue with the state
+  store and run leases in PostgreSQL.
+* Model-assisted clause analysis (finer than sentences), with the deterministic disposition as
+  the floor.
 * Product: PostgreSQL plus Redis for multi-instance rate limiting and caching, async click
   ingestion, OpenTelemetry export for the audit spans.

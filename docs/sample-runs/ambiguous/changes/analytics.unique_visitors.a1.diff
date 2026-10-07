@@ -207,7 +207,7 @@
 +
 --- /dev/null
 +++ b/src/test/java/com/example/shortener/integration/VisitorAnalyticsTest.java
-@@ -1,0 +1,103 @@
+@@ -1,0 +1,106 @@
 +package com.example.shortener.integration;
 +
 +import static org.assertj.core.api.Assertions.assertThat;
@@ -227,6 +227,7 @@
 +import java.util.regex.Matcher;
 +import java.util.regex.Pattern;
 +import org.flywaydb.core.Flyway;
++import org.junit.jupiter.api.Tag;
 +import org.junit.jupiter.api.BeforeEach;
 +import org.junit.jupiter.api.Test;
 +import org.junit.jupiter.api.io.TempDir;
@@ -264,6 +265,7 @@
 +        return m.group(1);
 +    }
 +
++    @Tag("AC-unique_visitors-1")
 +    @Test
 +    void uniqueVisitorsAreCountedPerDay() {
 +        String code = create();
@@ -278,6 +280,7 @@
 +        assertThat(http.get("/api/v1/links/" + code + "/stats", AUTH).body()).contains("\"unique_visitors\":3");
 +    }
 +
++    @Tag("AC-unique_visitors-2")
 +    @Test
 +    void rawIpIsNeverPersisted() {
 +        String code = create();

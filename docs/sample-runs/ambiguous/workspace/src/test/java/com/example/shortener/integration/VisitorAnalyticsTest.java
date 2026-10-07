@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -54,6 +55,7 @@ class VisitorAnalyticsTest {
         return m.group(1);
     }
 
+    @Tag("AC-unique_visitors-1")
     @Test
     void uniqueVisitorsAreCountedPerDay() {
         String code = create();
@@ -68,6 +70,7 @@ class VisitorAnalyticsTest {
         assertThat(http.get("/api/v1/links/" + code + "/stats", AUTH).body()).contains("\"unique_visitors\":3");
     }
 
+    @Tag("AC-unique_visitors-2")
     @Test
     void rawIpIsNeverPersisted() {
         String code = create();

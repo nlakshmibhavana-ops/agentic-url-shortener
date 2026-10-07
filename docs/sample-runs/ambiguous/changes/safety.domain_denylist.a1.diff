@@ -56,7 +56,7 @@
              throw new Errors.InvalidUrl("cannot shorten a link to this service");
 --- /dev/null
 +++ b/src/test/java/com/example/shortener/integration/DenylistApiTest.java
-@@ -1,0 +1,25 @@
+@@ -1,0 +1,27 @@
 +package com.example.shortener.integration;
 +
 +import static org.assertj.core.api.Assertions.assertThat;
@@ -64,6 +64,7 @@
 +import com.example.shortener.support.Http;
 +import com.example.shortener.support.IntegrationTest;
 +import java.net.http.HttpResponse;
++import org.junit.jupiter.api.Tag;
 +import org.junit.jupiter.api.Test;
 +import org.springframework.boot.test.web.server.LocalServerPort;
 +
@@ -73,6 +74,7 @@
 +    @LocalServerPort
 +    int port;
 +
++    @Tag("AC-domain_denylist-1")
 +    @Test
 +    void blockedDomainIsRejectedThroughTheApi() {
 +        HttpResponse<String> response = new Http(port).post("/api/v1/links",
@@ -96,7 +98,7 @@
  public @interface IntegrationTest {
 --- /dev/null
 +++ b/src/test/java/com/example/shortener/unit/DenylistTest.java
-@@ -1,0 +1,33 @@
+@@ -1,0 +1,35 @@
 +package com.example.shortener.unit;
 +
 +import static org.assertj.core.api.Assertions.assertThat;
@@ -105,6 +107,7 @@
 +import com.example.shortener.domain.Errors;
 +import com.example.shortener.service.UrlValidator;
 +import java.util.List;
++import org.junit.jupiter.api.Tag;
 +import org.junit.jupiter.params.ParameterizedTest;
 +import org.junit.jupiter.params.provider.ValueSource;
 +
@@ -117,6 +120,7 @@
 +        return UrlValidator.validate(url, 2048, "http://sho.rt", false, BLOCKED);
 +    }
 +
++    @Tag("AC-domain_denylist-1")
 +    @ParameterizedTest
 +    @ValueSource(strings = {"https://evil.example/x", "https://login.evil.example/", "http://PHISH.test"})
 +    void blocksListedDomainsAndTheirSubdomains(String url) {

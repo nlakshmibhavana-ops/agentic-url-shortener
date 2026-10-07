@@ -1,5 +1,5 @@
 {
-  "active_time_s" : 127.988,
+  "active_time_s" : 120.355,
   "approval_wait_s" : 1.2,
   "approvals" : 2,
   "attempt_success_rate" : 1.0,
@@ -20,16 +20,16 @@
   "rollbacks" : 0,
   "sessions" : 4,
   "stage_latency_ms" : {
-    "analyze" : 1393.6,
-    "design" : 19.6,
-    "docs" : 36098.2,
-    "perf.redirect_cache" : 17936.2,
-    "plan" : 100.6,
-    "readiness" : 8.1,
-    "requirements" : 239.0,
-    "review" : 36022.1,
-    "safety.domain_denylist" : 16015.2,
-    "test" : 36044.0
+    "analyze" : 1297.3,
+    "design" : 66.2,
+    "docs" : 35129.7,
+    "perf.redirect_cache" : 16673.7,
+    "plan" : 190.1,
+    "readiness" : 162.4,
+    "requirements" : 350.7,
+    "review" : 35006.4,
+    "safety.domain_denylist" : 15162.0,
+    "test" : 34982.1
   },
-  "wall_time_s" : 133.657
+  "wall_time_s" : 126.294
 }

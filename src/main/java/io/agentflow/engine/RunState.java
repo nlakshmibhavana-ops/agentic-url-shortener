@@ -27,6 +27,8 @@ public class RunState {
         public String status = "created";
         public String stopReason;
         public List<String> baseline = new ArrayList<>();
+        /** Fencing token: incremented by every owner; a writer holding an older token is refused. */
+        public long fencing;
         public double createdAt;
         public List<Node> nodes = new ArrayList<>();
         public ContextStore context = new ContextStore();
@@ -39,6 +41,7 @@ public class RunState {
     public String stopReason;
     public final Set<String> baseline;
     public final double createdAt;
+    public long fencing;
     public final Graph graph;
     public final ContextStore store;
 
@@ -56,6 +59,7 @@ public class RunState {
         this.stopReason = f.stopReason;
         this.baseline = new TreeSet<>(f.baseline);
         this.createdAt = f.createdAt;
+        this.fencing = f.fencing;
         this.graph = new Graph(f.nodes);
         this.store = f.context;
     }
@@ -64,8 +68,20 @@ public class RunState {
         return new Workspace(dir.resolve("workspace"));
     }
 
+    public static class FencedException extends IllegalStateException {
+        public FencedException(String message) {
+            super(message);
+        }
+    }
+
     public synchronized void save() {
+        long onDisk = onDiskFencing(dir);
+        if (onDisk > fencing) {
+            throw new FencedException("run " + runId + " was taken over by another owner (fencing token " + onDisk
+                    + " > " + fencing + "); refusing to overwrite its state");
+        }
         File f = new File();
+        f.fencing = fencing;
         f.runId = runId;
         f.scenario = scenario;
         f.status = status;
@@ -77,6 +93,14 @@ public class RunState {
         write(dir, f);
     }
 
+    static long onDiskFencing(Path dir) {
+        try {
+            return Json.parse(Files.readString(dir.resolve("state.json"))).path("fencing").asLong(0);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     static void write(Path dir, File f) {
         try {
             Path tmp = dir.resolve("state.json.tmp");
@@ -84,6 +108,10 @@ public class RunState {
                 Files.writeString(tmp, Json.pretty(f));
             }
             // Atomic rename: a crash never leaves half a state file.
+            try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(tmp,
+                    java.nio.file.StandardOpenOption.WRITE)) {
+                ch.force(true); // durable before it becomes visible
+            }
             Files.move(tmp, dir.resolve("state.json"), StandardCopyOption.REPLACE_EXISTING,
                     StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException e) {

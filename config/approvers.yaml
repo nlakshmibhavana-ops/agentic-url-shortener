@@ -1,0 +1,9 @@
+# Approver registry: roles and a salted SHA-256 of each token (tokens are never stored).
+# 'reviewer' is a DEMO approver whose token is published in the README
+# (demo-approver-token-not-for-production) so the scripted demo and CI can approve.
+# For real use: delete it and register people with ./agentflow approvers add <name> --roles ...
+approvers:
+  reviewer:
+    roles: [change, data, release]
+    salt: c693d733216d60bc313fad39d4204803
+    sha256: 25a9a87a7b50dca017f1c6a3a8507e6ae6420969ccf15a50047a129c26c0ef31

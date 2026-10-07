@@ -34,6 +34,21 @@ mvn test -DexcludedGroups=scenario   # unit tests only, seconds
 
 No API key is needed: by default the agents are deterministic (see "Three providers").
 
+**Approvals are authenticated.** Approvers and their roles live in `config/approvers.yaml`
+(salted token hashes only). It ships with one **demo** approver, `reviewer` (roles `change`,
+`data`, `release`), whose token is published so the demo and CI can approve:
+`demo-approver-token-not-for-production`. Approve as `reviewer` and paste that token when asked,
+or `export AGENTFLOW_APPROVER_TOKEN=demo-approver-token-not-for-production`. For real use,
+remove `reviewer` and register people with `./agentflow approvers add alice --roles change,data`
+(prints the token once).
+
+**Generated code runs sandboxed.** Builds, tests and app runs get an allowlisted environment.
+With [bubblewrap](https://github.com/containers/bubblewrap) installed (Linux; `apt install
+bubblewrap`), they also get no network (builds), no home directory, a read-only system and
+Maven cache, and only their workspace writable. `AGENTFLOW_SANDBOX=bwrap` makes that mandatory;
+the default `auto` falls back to environment scrubbing where user namespaces are unavailable
+and records which mode ran.
+
 ## Quick start
 
 ```bash
@@ -63,7 +78,8 @@ No API key is needed: by default the agents are deterministic (see "Three provid
 | answer `n` at an approval | the change is rolled back and the run stops |
 
 **Non-interactive** (CI or scripts): add `--no-input`. The run stops at each human step and tells
-you what to type, e.g. `./agentflow approve <run> release --by alice` then `./agentflow resume <run>`.
+you what to type, e.g. `./agentflow approve <run> release --by reviewer` (with
+`AGENTFLOW_APPROVER_TOKEN` set) then `./agentflow resume <run>`.
 
 ### CLI
 
@@ -72,7 +88,8 @@ you what to type, e.g. `./agentflow approve <run> release --by alice` then `./ag
 | `run <scenario> [--as NAME] [--no-input] [--provider deterministic\|ollama\|claude]` | start a run |
 | `resume <run> [--no-input]` | continue after a pause, stop or crash |
 | `answer <run> <question> <option> --by NAME` | resolve a clarifying question (triggers re-planning) |
-| `approve <run> <node> --by NAME [--reject] [--comment]` | human approval checkpoint |
+| `approve <run> <node> --by NAME [--reject] [--comment]` | human approval checkpoint (token from `AGENTFLOW_APPROVER_TOKEN` or a prompt; needs the request's role) |
+| `approvers add <name> --roles change,data,release` | register or rotate an approver; prints the token once |
 | `serve <run> [--port 8000]` | build and start the service a run produced |
 | `status <run>` / `report <run>` / `list` | state and pending human actions / regenerate report / runs |
 | `stop <run>` | safe stop (also Ctrl+C) |
@@ -88,7 +105,8 @@ runs/<run-id>/
                    decision log, test/review/readiness evidence, lineage, metrics
   audit.jsonl      append-only, hash-chained events with trace/span ids
   state.json       resumable state (graph, artifacts with versions/lineage, decisions)
-  approvals.json   approval requests and decisions, bound to change digests
+  approvals.json   approval requests (with the evidence bound) and authenticated decisions,
+                   keyed by the digest of the complete outcome
   metrics.json     success rate, retries, rollbacks, MTTR, latency, approvals, re-plans
   changes/*.diff   every change set applied, including rolled-back attempts
   workspace/       the product: Maven project, tests, openapi.json, docs/, CHANGELOG, RELEASE_NOTES
@@ -107,7 +125,7 @@ runs/<run-id>/
   structured outputs. Needs `ANTHROPIC_API_KEY`.
 
 In both LLM modes the implementation agent gets the task, its acceptance tests, the current files
-and the previous attempt's build failures. If a model's change fails policy or the build, it is
+and the structured diagnosis of the previous failed attempt. If a model's change fails policy or the build, it is
 rolled back and the deterministic agent is the **fallback**. Every provider goes through the same
 machinery: policy, write-set boundary, gates, approvals, rollback and audit.
 
@@ -117,8 +135,9 @@ machinery: policy, write-set boundary, gates, approvals, rollback and audit.
 src/main/java/io/agentflow/
   engine/     Engine (scheduling, gates, retries, fallback, approvals, rollback, invalidation,
               re-planning, safe stop, persistence), Scenario templates, RunState, Report
-  core/       Graph, Gates, Policy (JavaParser), Approvals, ContextStore, AuditLog, Metrics,
-              Workspace (undo logs), Maven runner, AppRunner (packaged-JAR runs), Knowledge
+  core/       Graph, Gates, Policy (JavaParser), Approvals + Approvers, ContextStore, AuditLog,
+              Metrics, Workspace (undo logs, hardened writes), Sandbox, Diagnosis, RunLock,
+              Maven runner, AppRunner (packaged-JAR runs), Knowledge
   agents/     requirements (+LLM), codebase analyst, design, planner, implement (+LLM),
               test runner, reviewer, docs, release readiness, release
   llm/        OllamaClient, ClaudeClient, record → JSON schema
@@ -127,5 +146,6 @@ src/main/resources/knowledge.yaml   capability vocabulary, acceptance criteria, 
 playbooks/    reviewed change catalogues: shortener (v1), linkly (upgrade), shortener-v2 (features)
 fixtures/linkly/   the legacy Spring Boot codebase for the brownfield scenario
 scenarios/    greenfield.yaml, brownfield.yaml, ambiguous.yaml
+config/       approvers.yaml (approver registry; contains only the demo approver)
 src/test/     orchestrator unit tests + end-to-end scenario tests (@Tag("scenario"))
 ```

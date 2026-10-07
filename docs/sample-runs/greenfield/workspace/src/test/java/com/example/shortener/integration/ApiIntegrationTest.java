@@ -9,6 +9,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -46,6 +47,9 @@ class ApiIntegrationTest {
         return m.group(1);
     }
 
+    @Tag("AC-link_creation-1")
+    @Tag("AC-redirect-1")
+    @Tag("AC-analytics-1")
     @Test
     void createRedirectAndStatsFlow() {
         HttpResponse<String> created = create("{\"url\":\"https://example.com/landing\"}");
@@ -64,6 +68,7 @@ class ApiIntegrationTest {
                 + "\",\"clicks\":2}", "{\"host\":\"news.example\",\"clicks\":1}", "{\"host\":\"direct\",\"clicks\":1}");
     }
 
+    @Tag("AC-custom_alias-2")
     @Test
     void customAliasAndConflict() {
         String created = code(create("{\"url\":\"https://example.com\",\"alias\":\"spring-sale\"}"));
@@ -73,6 +78,7 @@ class ApiIntegrationTest {
         assertThat(clash.body()).contains("\"error\":\"alias_taken\"");
     }
 
+    @Tag("AC-url_safety-1")
     @Test
     void rejectsUnsafeTarget() {
         HttpResponse<String> response = create("{\"url\":\"javascript:alert(document.cookie)\"}");
@@ -99,6 +105,7 @@ class ApiIntegrationTest {
         assertThat(http.send("DELETE", "/api/v1/links/" + code, null, OTHER).statusCode()).isEqualTo(404);
     }
 
+    @Tag("AC-redirect-2")
     @Test
     void deleteMakesLinkGone() {
         String code = code(create("{\"url\":\"https://example.com\"}"));
@@ -106,6 +113,8 @@ class ApiIntegrationTest {
         assertThat(http.get("/" + code).statusCode()).isEqualTo(410);
     }
 
+    @Tag("AC-redirect-2")
+    @Tag("AC-expiry-2")
     @Test
     void expiredLinkReturnsGone() {
         String expires = clock.instant().plus(Duration.ofMinutes(5)).toString();
@@ -115,6 +124,7 @@ class ApiIntegrationTest {
         assertThat(http.get("/" + code).statusCode()).isEqualTo(410);
     }
 
+    @Tag("AC-redirect-2")
     @Test
     void unknownCodeIs404() {
         HttpResponse<String> response = http.get("/doesNotExist");
@@ -122,6 +132,7 @@ class ApiIntegrationTest {
         assertThat(response.body()).contains("\"error\":\"not_found\"");
     }
 
+    @Tag("AC-reliability-1")
     @Test
     void idempotencyKeyReplaysOriginal() {
         String[] headers = {"X-API-Key", "test-key-1", "Idempotency-Key", "order-42"};
@@ -133,6 +144,7 @@ class ApiIntegrationTest {
         assertThat(create("{\"url\":\"https://example.org\"}", headers).statusCode()).isEqualTo(422);
     }
 
+    @Tag("AC-rate_limiting-1")
     @Test
     void rateLimitReturns429WithRetryAfter() {
         String[] limits = {"X-API-Key", "test-key-limits"};
@@ -147,12 +159,15 @@ class ApiIntegrationTest {
         assertThat(create("{\"url\":\"https://example.com\"}", limits).statusCode()).isEqualTo(201);
     }
 
+    @Tag("AC-reliability-2")
+    @Tag("AC-platform-1")
     @Test
     void healthAndReadiness() {
         assertThat(http.get("/healthz").body()).isEqualTo("{\"status\":\"ok\"}");
         assertThat(http.get("/readyz").statusCode()).isEqualTo(200);
     }
 
+    @Tag("AC-reliability-3")
     @Test
     void requestIdIsPropagated() {
         HttpResponse<String> echoed = http.get("/healthz", "X-Request-ID", "abc123");

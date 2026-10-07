@@ -43,7 +43,8 @@ public final class Maven {
         cmd.add(executable());
         cmd.addAll(baseArgs());
         cmd.addAll(args);
-        return run(cmd, cwd, timeoutSeconds, Map.of());
+        // Builds run generated code and plugins: sandboxed, offline, with a scrubbed environment.
+        return run(Sandbox.wrap(cmd, cwd, false), cwd, timeoutSeconds, Map.of());
     }
 
     public static Result run(List<String> cmd, Path cwd, long timeoutSeconds, Map<String, String> env) {
@@ -53,7 +54,9 @@ public final class Maven {
             log = Files.createTempFile("agentflow-", ".log");
             ProcessBuilder pb = new ProcessBuilder(cmd).directory(cwd.toFile()).redirectErrorStream(true)
                     .redirectOutput(log.toFile());
-            pb.environment().putAll(env);
+            // Never inherit the orchestrator's environment (API keys, tokens): allowlisted variables only.
+            pb.environment().clear();
+            pb.environment().putAll(Sandbox.environment(env));
             process = pb.start();
             if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 process.descendants().forEach(ProcessHandle::destroyForcibly);

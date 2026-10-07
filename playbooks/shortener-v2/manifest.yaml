@@ -7,7 +7,7 @@ package: com.example.shortener
 coverage_min: 90
 docs:
   app: shortener
-serve_props: {spring.datasource.url: "jdbc:h2:file:{run_dir}/service/shortener", shortener.api-keys: dev-key}
+serve_props: {shortener.api-keys: dev-key}
 smoke_props: {shortener.api-keys: smoke-key}
 smoke:
   - {method: GET, path: /readyz, expect: 200}
@@ -17,7 +17,8 @@ smoke:
 tasks:
   - id: perf.redirect_cache
     title: "Q-PERF: bounded TTL read-through cache on the redirect path (p95 < 50 ms)"
-    capabilities: [redirect_cache]
+    # It also delivers the agreed latency target, so the performance criterion traces to this code.
+    capabilities: [redirect_cache, performance]
     writes: [src/main/java/com/example/shortener/service/TtlCache.java,
              src/main/java/com/example/shortener/config/ShortenerProperties.java,
              src/main/java/com/example/shortener/service/LinkService.java,

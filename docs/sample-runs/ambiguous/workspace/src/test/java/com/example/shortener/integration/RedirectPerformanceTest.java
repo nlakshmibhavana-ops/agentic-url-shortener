@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,6 +43,8 @@ class RedirectPerformanceTest {
         return m.group(1);
     }
 
+    @Tag("AC-performance-1")
+    @Tag("AC-redirect_cache-3")
     @Test
     void redirectP95IsUnder50Ms() {
         String code = create("{\"url\":\"https://example.com\"}");
@@ -59,6 +62,7 @@ class RedirectPerformanceTest {
         assertThat(p95).as("p95 %.1f ms", p95 / 1e6).isLessThan(50_000_000L);
     }
 
+    @Tag("AC-redirect_cache-2")
     @Test
     void deleteInvalidatesTheCachedRedirect() {
         String code = create("{\"url\":\"https://example.com\"}");

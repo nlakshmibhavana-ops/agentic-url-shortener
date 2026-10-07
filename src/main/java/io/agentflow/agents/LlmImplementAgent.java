@@ -47,7 +47,8 @@ public class LlmImplementAgent implements Agent {
                 "Allowed paths (write only these, complete file contents): " + ctx.node().writes,
                 "Current content of those paths:\n" + (current.isEmpty() ? "(new files)" : Json.pretty(current)),
                 "Design decisions:\n" + ctx.store().get("design").path("adrs"),
-                "Previous attempt feedback:\n" + (ctx.feedback() == null ? "none" : ctx.feedback()));
+                "Diagnosis of the previous failed attempt (repair exactly this):\n" + (ctx.diagnosis() == null
+                        ? "none (first attempt)" : Json.write(ctx.diagnosis().toMap())));
         LlmClient.Result<Change> res = ctx.llm().structured(
                 "You are a senior Java engineer. Produce minimal, production-quality changes that make the "
                         + "acceptance tests pass. Return complete file contents. Never add dependencies, secrets, "

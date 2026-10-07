@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.shortener.domain.Errors;
 import com.example.shortener.service.UrlValidator;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -20,6 +21,8 @@ class UrlValidatorTest {
         assertThat(check("HTTPS://Example.COM/Path?q=A#Frag")).isEqualTo("https://example.com/Path?q=A#Frag");
     }
 
+    @Tag("AC-url_safety-1")
+    @Tag("AC-url_safety-2")
     @ParameterizedTest
     @ValueSource(strings = {
         "javascript:alert(1)", "data:text/html,<script>alert(1)</script>", "ftp://example.com/file",

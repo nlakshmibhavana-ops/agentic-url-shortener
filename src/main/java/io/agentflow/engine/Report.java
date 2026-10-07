@@ -85,6 +85,14 @@ public final class Report {
             req.get("capabilities").forEach(c -> rows.add(Arrays.asList(c.get("id").asText(), c.get("source").asText(),
                     join(c.get("acceptance_criteria"), "<br>"))));
             table(out, List.of("Capability", "Evidence in request", "Acceptance criteria"), rows);
+            if (req.has("clauses")) {
+                out.addAll(List.of("", "**Requirement coverage** (every clause of the request has a disposition)", ""));
+                List<List<Object>> crows = new ArrayList<>();
+                req.get("clauses").forEach(c -> crows.add(Arrays.asList(c.get("id").asText(), c.get("text").asText(),
+                        c.get("disposition").asText(), join(c.has("covered_by") ? c.get("covered_by") : c.get("questions"),
+                                ", "))));
+                table(out, List.of("Clause", "Text", "Disposition", "Covered by"), crows);
+            }
             if (!req.get("questions").isEmpty()) {
                 out.addAll(List.of("", "**Ambiguities detected**", ""));
                 List<List<Object>> qrows = new ArrayList<>();
@@ -223,10 +231,21 @@ public final class Report {
         }
         table(out, List.of("Id", "Node", "By", "Decision", "Rationale", "Inputs"), drows);
         out.add("");
+        if (store.has("release_readiness") && store.get("release_readiness").has("traceability")) {
+            out.addAll(List.of("### Feature-completion proof (criterion → code → test)", ""));
+            List<List<Object>> trows = new ArrayList<>();
+            store.get("release_readiness").get("traceability").forEach(t -> trows.add(Arrays.asList(
+                    t.get("criterion").asText(), t.get("text").asText(), join(t.get("code"), "<br>"),
+                    join(t.get("tests_passed"), "<br>"), t.get("proven").asBoolean() ? "proven" : "**NOT PROVEN**")));
+            table(out, List.of("Criterion", "Text", "Code", "Passing tests", "Status"), trows);
+            out.add("");
+        }
         for (String name : List.of("test_report", "review_report", "release_readiness")) {
             if (store.has(name)) {
                 com.fasterxml.jackson.databind.node.ObjectNode art = store.get(name).deepCopy();
                 art.remove("tail");
+                art.remove("traceability");
+                art.remove("passed_tests");
                 String text = Json.pretty(art);
                 out.addAll(List.of("### " + name, "", "```json", text.length() > 2500 ? text.substring(0, 2500) : text,
                         "```", ""));

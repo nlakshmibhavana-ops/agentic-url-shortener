@@ -1,34 +1,60 @@
 {
   "requests" : {
-    "impl.expiry@823c3370822eba74" : {
+    "impl.expiry@07b3d067b60d5601" : {
       "node" : "impl.expiry",
-      "subject" : "823c3370822eba74",
-      "summary" : "LINK-150: optional expires_in_days; 410 Gone after expiry; additive schema migration\nchange: Add a nullable expires_at column (V2 migration), so existing rows stay valid (digest 823c3370822eba74)\nfiles: src/main/java/com/example/linkly/LinkController.java, src/main/java/com/example/linkly/LinkStore.java, src/main/resources/db/migration/V2__add_expires_at.sql\nValidation evidence:\n[x] build: compiled, checkstyle clean, [ExpiryTest, LinkApiTest, MigrationTest] passed",
+      "subject" : "07b3d067b60d5601",
+      "summary" : "LINK-150: optional expires_in_days; 410 Gone after expiry; additive schema migration\nchange: Add a nullable expires_at column (V2 migration), so existing rows stay valid (digest 823c3370822eba74)\nfiles: src/main/java/com/example/linkly/LinkController.java, src/main/java/com/example/linkly/LinkStore.java, src/main/resources/db/migration/V2__add_expires_at.sql\nValidation evidence:\n[x] build: compiled, checkstyle clean, executed: ExpiryTest 4/4, LinkApiTest 3/3, MigrationTest 1/1; sandbox bwrap\nOutcome digest 07b3d067b60d5601 binds: workspace_tree, change_set, policy_findings, gates, requirements, plan",
       "reasons" : [ "DATA-001 src/main/resources/db/migration/V2__add_expires_at.sql: schema change against an existing database" ],
-      "requested_at" : 1.791328315609E9
+      "required_role" : "data",
+      "evidence" : {
+        "change_set" : "823c3370822eba74",
+        "gates" : [ "build=pass" ],
+        "plan" : "29afa085215444c5@v1",
+        "policy_findings" : "beb35d8ab8e37780",
+        "requirements" : "b4c57c2dfc9b4581@v1",
+        "workspace_tree" : "cc8901f50d4c2197 (15 files)"
+      },
+      "requested_at" : 1.791340724706E9
     },
-    "release@679c169b84ecd35e" : {
+    "release@6145476ca309d876" : {
       "node" : "release",
-      "subject" : "679c169b84ecd35e",
-      "summary" : "Cut the release (version, notes) after human approval\nchange: Release 0.5.0 (digest 679c169b84ecd35e)\nfiles: RELEASE_NOTES.md, VERSION, pom.xml\n[x] all tests pass: 11 passed / 0 failed\n[x] line coverage >= 85.0%: 96.1%\n[x] checkstyle clean: 0 issues\n[x] no security findings: 0 findings\n[x] docs generated: openapi.json, docs/API.md, docs/DESIGN.md, CHANGELOG.md\n[x] no blocking questions open: []\nValidation evidence:\n[x] smoke: packaged JAR started; POST /shorten -> 200; GET /r/1 -> 302; POST /shorten -> 400; GET /info/1 -> 200",
+      "subject" : "6145476ca309d876",
+      "summary" : "Cut the release (version, notes) after human approval\nchange: Release 0.5.0 (digest 522a88048e618e5f)\nfiles: RELEASE_NOTES.md, VERSION, pom.xml\n[x] all tests pass: 11 passed / 0 failed\n[x] line coverage >= 85.0%: 96.1%\n[x] checkstyle clean: 0 issues\n[x] no security findings: 0 findings\n[x] docs generated: openapi.json, docs/API.md, docs/DESIGN.md, CHANGELOG.md\n[x] no blocking questions open: []\n[x] every requirement clause is covered, a constraint, or explicitly descoped: 6 clauses\n[x] every acceptance criterion is proven: linked code + a passing tagged test: 6 criteria, all proven\nValidation evidence:\n[x] smoke: packaged JAR started; POST /shorten -> 200; GET /r/1 -> 302; POST /shorten -> 400; GET /info/1 -> 200\nOutcome digest 6145476ca309d876 binds: workspace_tree, change_set, policy_findings, gates, requirements, plan, test_report, review_report, docs, release_readiness",
       "reasons" : [ "high-impact stage 'release'", "CHG-002 pom.xml: modifies a protected file" ],
-      "requested_at" : 1.791328377165E9
+      "required_role" : "release",
+      "evidence" : {
+        "change_set" : "522a88048e618e5f",
+        "docs" : "badcb403f84a6dc2@v1",
+        "gates" : [ "smoke=pass" ],
+        "plan" : "29afa085215444c5@v1",
+        "policy_findings" : "b8793542bad40468",
+        "release_readiness" : "364c5be919d130b9@v1",
+        "requirements" : "b4c57c2dfc9b4581@v1",
+        "review_report" : "8a5c7a903af5d0a0@v1",
+        "test_report" : "602c61f148535e7c@v1",
+        "workspace_tree" : "5d03da23194160ba (21 files)"
+      },
+      "requested_at" : 1.791340781176E9
     }
   },
   "decisions" : {
-    "impl.expiry@823c3370822eba74" : {
+    "impl.expiry@07b3d067b60d5601" : {
       "status" : "approved",
       "by" : "reviewer",
+      "role" : "data",
+      "authenticated" : "token",
       "comment" : "additive nullable column; v0.4 upgrade test passes",
-      "decided_at" : 1.791328316627E9,
-      "waited_s" : 1.0
+      "decided_at" : 1.791340725851E9,
+      "waited_s" : 1.1
     },
-    "release@679c169b84ecd35e" : {
+    "release@6145476ca309d876" : {
       "status" : "approved",
       "by" : "reviewer",
+      "role" : "release",
+      "authenticated" : "token",
       "comment" : "",
-      "decided_at" : 1.791328378464E9,
-      "waited_s" : 1.3
+      "decided_at" : 1.791340782537E9,
+      "waited_s" : 1.4
     }
   }
 }

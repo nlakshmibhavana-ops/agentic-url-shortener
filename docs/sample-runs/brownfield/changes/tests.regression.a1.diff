@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/src/test/java/com/example/linkly/ClickAccuracyTest.java
-@@ -1,0 +1,44 @@
+@@ -1,0 +1,47 @@
 +package com.example.linkly;
 +
 +import static org.assertj.core.api.Assertions.assertThat;
@@ -9,6 +9,7 @@
 +import java.util.concurrent.ExecutorService;
 +import java.util.concurrent.Executors;
 +import java.util.concurrent.TimeUnit;
++import org.junit.jupiter.api.Tag;
 +import org.junit.jupiter.api.Test;
 +import org.springframework.boot.test.context.SpringBootTest;
 +import org.springframework.boot.test.web.server.LocalServerPort;
@@ -21,6 +22,7 @@
 +    @LocalServerPort
 +    int port;
 +
++    @Tag("AC-click_accuracy-1")
 +    @Test
 +    void concurrentClicksAreNotLost() throws InterruptedException {
 +        Http http = new Http(port);
@@ -35,6 +37,7 @@
 +        assertThat(Http.field(http.get("/info/" + code).body(), "clicks")).isEqualTo("200");
 +    }
 +
++    @Tag("AC-click_accuracy-2")
 +    @Test
 +    void redirectIsNotPermanentlyCacheable() {
 +        Http http = new Http(port);
@@ -47,7 +50,7 @@
 +
 --- /dev/null
 +++ b/src/test/java/com/example/linkly/ExpiryTest.java
-@@ -1,0 +1,60 @@
+@@ -1,0 +1,64 @@
 +package com.example.linkly;
 +
 +import static org.assertj.core.api.Assertions.assertThat;
@@ -55,6 +58,7 @@
 +import java.time.Duration;
 +import java.time.Instant;
 +import java.time.OffsetDateTime;
++import org.junit.jupiter.api.Tag;
 +import org.junit.jupiter.api.Test;
 +import org.springframework.beans.factory.annotation.Autowired;
 +import org.springframework.boot.test.context.SpringBootTest;
@@ -72,6 +76,7 @@
 +    @Autowired
 +    JdbcTemplate jdbc;
 +
++    @Tag("AC-expiry-1")
 +    @Test
 +    void linkWithoutExpiryStillWorks() {
 +        Http http = new Http(port);
@@ -80,6 +85,7 @@
 +        assertThat(http.get("/info/" + code).body()).contains("\"expires_at\":null");
 +    }
 +
++    @Tag("AC-expiry-1")
 +    @Test
 +    void expiringLinkReportsItsExpiry() {
 +        Http http = new Http(port);
@@ -89,6 +95,7 @@
 +        assertThat(left).isBetween(Duration.ofDays(7).minusHours(1), Duration.ofDays(7));
 +    }
 +
++    @Tag("AC-expiry-2")
 +    @Test
 +    void expiredLinkIsGone() {
 +        Http http = new Http(port);
@@ -156,13 +163,14 @@
 +
 --- /dev/null
 +++ b/src/test/java/com/example/linkly/UrlSafetyTest.java
-@@ -1,0 +1,37 @@
+@@ -1,0 +1,40 @@
 +package com.example.linkly;
 +
 +import static org.assertj.core.api.Assertions.assertThat;
 +
 +import java.net.http.HttpResponse;
 +import java.util.List;
++import org.junit.jupiter.api.Tag;
 +import org.junit.jupiter.api.Test;
 +import org.springframework.boot.test.context.SpringBootTest;
 +import org.springframework.boot.test.web.server.LocalServerPort;
@@ -180,6 +188,8 @@
 +    @LocalServerPort
 +    int port;
 +
++    @Tag("AC-url_safety-1")
++    @Tag("AC-url_safety-2")
 +    @Test
 +    void unsafeUrlsAreRejectedAndNothingIsStored() {
 +        Http http = new Http(port);

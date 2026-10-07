@@ -7,6 +7,7 @@ import io.agentflow.agents.Agents;
 import io.agentflow.core.Approvals;
 import io.agentflow.core.AuditLog;
 import io.agentflow.core.ContextStore;
+import io.agentflow.core.Diagnosis;
 import io.agentflow.core.Gates;
 import io.agentflow.core.Graph;
 import io.agentflow.core.Home;
@@ -21,6 +22,7 @@ import io.agentflow.model.ChangeSet;
 import io.agentflow.model.Decision;
 import io.agentflow.model.GateResult;
 import io.agentflow.model.Impact;
+import io.agentflow.model.NoRepairException;
 import io.agentflow.model.Node;
 import io.agentflow.model.NodeStatus;
 import java.io.IOException;
@@ -59,7 +61,7 @@ public class Engine {
 
     private static final Set<String> MUTATING_KINDS = Set.of("task");
 
-    private final RunState state;
+    private RunState state;
     private final Path dir;
     private final AuditLog audit;
     private final Approvals approvals;
@@ -151,6 +153,14 @@ public class Engine {
 
     /** A human answer is just a new upstream artifact; invalidation does the rest. */
     public void submitAnswer(String question, String option, String by) {
+        try (io.agentflow.core.RunLock lock = io.agentflow.core.RunLock.acquire(dir, "answer " + question)) {
+            state = new RunState(dir); // the authoritative state, read under ownership
+            state.fencing++;
+            recordAnswer(question, option, by);
+        }
+    }
+
+    private void recordAnswer(String question, String option, String by) {
         Map<String, Object> answers = Json.convert(store().get("human_answers"), Map.class);
         answers.put(question, data("option", option, "by", by, "ts", Json.now()));
         store().put("human_answers", answers, "human:" + by, Map.of());
@@ -169,8 +179,20 @@ public class Engine {
     }
 
     public String execute() {
+        // Exclusive, crash-safe ownership: the OS releases the lock if this process dies, so another
+        // process can resume (failover); the fencing token stops a stale owner from writing state.
+        try (io.agentflow.core.RunLock lock = io.agentflow.core.RunLock.acquire(dir, "execute")) {
+            state = new RunState(dir);
+            state.fencing++;
+            state.save();
+            return executeOwned(lock.ownerId);
+        }
+    }
+
+    private String executeOwned(String owner) {
         sessionStarted = Json.now();
-        audit.record("run.session.start", null, data("status", state.status));
+        audit.record("run.session.start", null, data("status", state.status, "owner", owner, "fencing",
+                state.fencing, "sandbox", io.agentflow.core.Sandbox.describe()));
         recoverInflight();
         for (Node n : graph().all()) {
             if (n.status == NodeStatus.WAITING || n.status == NodeStatus.STOPPED || n.status == NodeStatus.RUNNING) {
@@ -344,6 +366,7 @@ public class Engine {
         });
         String feedback = null;
         boolean useFallback = false;
+        List<AgentContext.Attempt> history = new ArrayList<>();
         while (node.attempts < node.maxAttempts) {
             if (stopRequested || Thread.currentThread().isInterrupted()) {
                 withState(() -> node.status = NodeStatus.STOPPED);
@@ -352,14 +375,25 @@ public class Engine {
             int attempt = node.attempts + 1;
             boolean last = attempt == node.maxAttempts;
             String agentName = node.fallbackAgent != null && (useFallback || last) ? node.fallbackAgent : node.agent;
-            Map<String, Object> outcome = attempt(node, attempt, agentName, consumed, feedback);
+            Map<String, Object> outcome = attempt(node, attempt, agentName, consumed, feedback, history);
             String result = (String) outcome.get("result");
             if (List.of("succeeded", "waiting", "rejected").contains(result)) {
                 return;
             }
             node.attempts++;
             feedback = (String) outcome.get("feedback");
-            useFallback |= Boolean.TRUE.equals(outcome.get("agent_error"));
+            // A failed model attempt hands over to the reviewed fallback for the rest of the node.
+            useFallback |= Boolean.TRUE.equals(outcome.get("agent_error")) || node.fallbackAgent != null;
+            if (Boolean.TRUE.equals(outcome.get("no_repair"))) {
+                break; // a deterministic dead end: retrying would repeat it, a human must decide
+            }
+            if (!Boolean.TRUE.equals(outcome.get("agent_error"))) {
+                // Diagnose the failure from its evidence; the next attempt repairs against this.
+                Diagnosis diagnosis = Diagnosis.of(feedback);
+                history.add(new AgentContext.Attempt(agentName, (Integer) outcome.get("candidate"), diagnosis));
+                audit.record("failure.diagnosed", node.id, data("attempt", attempt, "agent", agentName,
+                        "candidate", outcome.get("candidate"), "diagnosis", diagnosis.toMap()));
+            }
             if (node.attempts < node.maxAttempts) {
                 audit.record("attempt.retry", node.id, data("next_attempt", node.attempts + 1, "reason", feedback));
                 sleep((long) Math.min(50 * Math.pow(2, node.attempts), 2000)); // bounded backoff
@@ -384,10 +418,10 @@ public class Engine {
     }
 
     private Map<String, Object> attempt(Node node, int attempt, String agentName, Map<String, Integer> consumed,
-            String feedback) {
+            String feedback, List<AgentContext.Attempt> history) {
         try (AuditLog.Span span = audit.span("attempt", node.id, data("attempt", attempt, "agent", agentName))) {
             AgentContext ctx = new AgentContext(node, store(), workspace(), state.scenario, attempt, dir, workspaceLock,
-                    llm, feedback, state.baseline);
+                    llm, feedback, state.baseline, List.copyOf(history));
             AgentResult result;
             try {
                 result = Agents.create(agentName).run(ctx);
@@ -395,8 +429,14 @@ public class Engine {
                 String msg = agentName + ": " + e.getMessage();
                 span.outcome.put("result", "failed");
                 span.outcome.put("reason", msg);
-                return data("result", "failed", "feedback", msg, "agent_error", true);
+                return data("result", "failed", "feedback", msg, "agent_error", true, "no_repair",
+                        e instanceof NoRepairException);
             }
+            if (result.changeset != null && ctx.diagnosis() != null) {
+                audit.record("repair.selected", "agent:" + agentName, node.id, span.id, data("candidate",
+                        result.changeset.candidate(), "for", ctx.diagnosis().toMap()));
+            }
+            Integer candidate = result.changeset == null ? null : result.changeset.candidate();
             span.outcome.put("tokens", result.tokens);
             for (String note : result.notes) {
                 audit.record("agent.note", "agent:" + agentName, node.id, span.id, data("note", note));
@@ -412,6 +452,7 @@ public class Engine {
                         unstage(staged);
                         span.outcome.put("result", applied.get("result"));
                         span.outcome.put("reason", applied.get("feedback"));
+                        applied.put("candidate", candidate);
                         return applied;
                     }
                     undo = (Workspace.UndoLog) applied.get("undo");
@@ -435,7 +476,7 @@ public class Engine {
                     String msg = String.join("; ", failed.stream().map(g -> g.gate() + ": " + g.detail()).toList());
                     span.outcome.put("result", "failed");
                     span.outcome.put("reason", msg);
-                    return data("result", "failed", "feedback", msg);
+                    return data("result", "failed", "feedback", msg, "candidate", candidate);
                 }
                 @SuppressWarnings("unchecked")
                 List<String> reasons = applied == null ? List.of() : (List<String>) applied.get("reasons");
@@ -443,8 +484,16 @@ public class Engine {
                     // Humans approve verified changes: the gates above are the evidence.
                     String evidence = String.join("\n", gates.stream().map(g -> "[" + (g.passed() ? "x" : " ") + "] "
                             + g.gate() + ": " + abbreviate(g.detail(), 200)).toList());
-                    String summary = applied.get("summary") + "\nValidation evidence:\n" + evidence;
-                    String decision = approvals.check(node.id, (String) applied.get("digest"), summary, reasons);
+                    // The approval binds the complete outcome, not just the diff: see outcomeEvidence().
+                    Map<String, Object> outcome = outcomeEvidence(node, (String) applied.get("digest"),
+                            (String) applied.get("policy_digest"), gates);
+                    String outcomeDigest = Json.stableHash(outcome);
+                    applied.put("outcome_digest", outcomeDigest);
+                    applied.put("outcome", outcome);
+                    String summary = applied.get("summary") + "\nValidation evidence:\n" + evidence
+                            + "\nOutcome digest " + outcomeDigest + " binds: " + String.join(", ", outcome.keySet());
+                    String decision = approvals.check(node.id, outcomeDigest, summary, reasons,
+                            io.agentflow.core.Approvers.requiredRole(node.id, reasons), outcome);
                     if (decision.equals(Approvals.PENDING)) {
                         Map<String, Object> app = applied;
                         withState(() -> parkForApproval(node, app, summary, consumed, staged, result));
@@ -453,7 +502,7 @@ public class Engine {
                     }
                     if (decision.equals(Approvals.REJECTED)) {
                         Workspace.UndoLog u = undo;
-                        String digest = (String) applied.get("digest");
+                        String digest = outcomeDigest;
                         withState(() -> reject(node, u, staged, digest));
                         span.outcome.put("result", "rejected");
                         return data("result", "rejected");
@@ -498,7 +547,14 @@ public class Engine {
         Map<String, String> before = new LinkedHashMap<>();
         planned.forEach((p, ba) -> before.put(p, ba[0]));
         writeUndo(node, before, "inflight");
-        Workspace.Applied applied = workspace().apply(cs);
+        Workspace.Applied applied;
+        try {
+            // Exactly the change the policy evaluated: contents re-verified against the planned hashes.
+            applied = workspace().apply(planned);
+        } catch (Workspace.WorkspaceException e) {
+            dropUndo(node, "inflight");
+            return data("result", "failed", "feedback", "change could not be applied safely: " + e.getMessage());
+        }
         try {
             Files.writeString(dir.resolve("changes").resolve(node.id + ".a" + attempt + ".diff"), applied.diff());
         } catch (IOException e) {
@@ -508,8 +564,34 @@ public class Engine {
         audit.record("change.applied", null, node.id, span, data("digest", cs.digest(), "summary", cs.summary(),
                 "candidate", cs.candidate(), "paths", cs.paths(), "added", stats[0], "removed", stats[1]));
         return data("result", "applied", "undo", applied.undo(), "reasons", reasons, "digest", cs.digest(),
+                "policy_digest", Json.stableHash(verdict.findings().stream().map(Policy::asMap).toList()),
                 "summary", node.title + "\nchange: " + cs.summary() + " (digest " + cs.digest() + ")\nfiles: "
                         + String.join(", ", planned.keySet()) + readinessLines(node));
+    }
+
+    /**
+     * Everything an approval vouches for: the full workspace tree (every file's hash), the requirement
+     * and plan versions it was built from, the change set, the policy findings, the gate verdicts and,
+     * for a release, the test, review, docs and readiness evidence.
+     */
+    private Map<String, Object> outcomeEvidence(Node node, String changeDigest, String policyDigest,
+            List<GateResult> gates) {
+        Map<String, Object> ev = new LinkedHashMap<>();
+        Map<String, String> tree = new java.util.TreeMap<>();
+        workspace().files().forEach(f -> tree.put(f, Json.sha256(workspace().read(f))));
+        ev.put("workspace_tree", Json.stableHash(tree) + " (" + tree.size() + " files)");
+        ev.put("change_set", changeDigest);
+        ev.put("policy_findings", policyDigest);
+        ev.put("gates", gates.stream().map(g -> g.gate() + "=" + (g.passed() ? "pass" : "fail")).toList());
+        List<String> artifacts = new ArrayList<>(List.of("requirements", "plan"));
+        if (node.id.equals("release")) {
+            artifacts.addAll(List.of("test_report", "review_report", "docs", "release_readiness"));
+        }
+        for (String a : artifacts) {
+            ContextStore.ArtifactVersion v = store().latest(a);
+            ev.put(a, v == null ? "absent" : v.digest + "@v" + v.version);
+        }
+        return ev;
     }
 
     private String readinessLines(Node node) {
@@ -533,7 +615,10 @@ public class Engine {
             List<String[]> staged, AgentResult result) {
         moveUndo(node, "inflight", "pending");
         Map<String, Object> pending = new LinkedHashMap<>();
-        pending.put("digest", applied.get("digest"));
+        pending.put("digest", applied.get("outcome_digest"));
+        pending.put("change_digest", applied.get("digest"));
+        pending.put("policy_digest", applied.get("policy_digest"));
+        pending.put("outcome", applied.get("outcome"));
         pending.put("summary", summary);
         pending.put("reasons", applied.get("reasons"));
         pending.put("consumed", consumed);
@@ -563,8 +648,9 @@ public class Engine {
     @SuppressWarnings("unchecked")
     private boolean resumePending(Node node) {
         Map<String, Object> pa = node.pending;
-        String decision = approvals.check(node.id, (String) pa.get("digest"), (String) pa.get("summary"),
-                (List<String>) pa.get("reasons"));
+        List<String> reasons = (List<String>) pa.get("reasons");
+        String decision = approvals.check(node.id, (String) pa.get("digest"), (String) pa.get("summary"), reasons,
+                io.agentflow.core.Approvers.requiredRole(node.id, reasons), (Map<String, Object>) pa.get("outcome"));
         if (decision.equals(Approvals.PENDING)) {
             withState(() -> waitFor(node, "approval required: " + String.join("; ", (List<String>) pa.get("reasons"))));
             return true;
@@ -575,11 +661,27 @@ public class Engine {
             return true;
         }
         workspaceLock.lock();
-        try { // re-check: the evidence must still hold at the moment of approval
+        try { // re-check: the evidence must still hold, and the outcome must be exactly what was approved
+            List<GateResult> rechecked = new ArrayList<>();
             for (String g : node.exitGates) {
                 GateResult r = Gates.evaluate(g, gctx(node));
+                rechecked.add(r);
                 audit.record("gate.exit", node.id, data("gate", r.gate(), "passed", r.passed(), "detail", r.detail(),
                         "recheck", true));
+            }
+            String current = Json.stableHash(outcomeEvidence(node, (String) pa.get("change_digest"),
+                    (String) pa.get("policy_digest"), rechecked));
+            if (!current.equals(pa.get("digest"))) {
+                workspace().rollback(undo);
+                dropUndo(node, "pending");
+                audit.record("approval.invalidated", node.id, data("approved", pa.get("digest"), "current", current,
+                        "reason", "the workspace, requirements, plan or evidence changed after approval"));
+                audit.record("change.rolled_back", node.id, data("paths", new TreeSet<>(undo.before().keySet()),
+                        "reason", "approved outcome no longer matches current state"));
+                node.pending = null;
+                return false;
+            }
+            for (GateResult r : rechecked) {
                 if (!r.passed()) {
                     workspace().rollback(undo);
                     dropUndo(node, "pending");

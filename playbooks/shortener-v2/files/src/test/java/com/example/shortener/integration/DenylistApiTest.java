@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.example.shortener.support.Http;
 import com.example.shortener.support.IntegrationTest;
 import java.net.http.HttpResponse;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.web.server.LocalServerPort;
 
@@ -14,6 +15,7 @@ class DenylistApiTest {
     @LocalServerPort
     int port;
 
+    @Tag("AC-domain_denylist-1")
     @Test
     void blockedDomainIsRejectedThroughTheApi() {
         HttpResponse<String> response = new Http(port).post("/api/v1/links",

@@ -53,6 +53,18 @@ public final class Playbooks {
         return c.isArray() ? c.size() : 1;
     }
 
+    /** The failures a candidate is a reviewed repair for: [{phase, test?, rule?, file?}]. */
+    @SuppressWarnings("unchecked")
+    public static List<Map<String, Object>> repairs(String name, String taskId, int candidate) {
+        JsonNode variants = task(name, taskId).path("candidates");
+        if (!variants.isArray() || candidate >= variants.size()) {
+            return List.of();
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        variants.get(candidate).path("repairs").forEach(r -> out.add(Json.convert(r, Map.class)));
+        return out;
+    }
+
     public static ChangeSet changeset(String name, String taskId, int candidate) {
         JsonNode spec = task(name, taskId);
         JsonNode variants = spec.path("candidates");

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -22,6 +23,7 @@ class ExpiryTest {
     @Autowired
     JdbcTemplate jdbc;
 
+    @Tag("AC-expiry-1")
     @Test
     void linkWithoutExpiryStillWorks() {
         Http http = new Http(port);
@@ -30,6 +32,7 @@ class ExpiryTest {
         assertThat(http.get("/info/" + code).body()).contains("\"expires_at\":null");
     }
 
+    @Tag("AC-expiry-1")
     @Test
     void expiringLinkReportsItsExpiry() {
         Http http = new Http(port);
@@ -39,6 +42,7 @@ class ExpiryTest {
         assertThat(left).isBetween(Duration.ofDays(7).minusHours(1), Duration.ofDays(7));
     }
 
+    @Tag("AC-expiry-2")
     @Test
     void expiredLinkIsGone() {
         Http http = new Http(port);

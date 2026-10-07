@@ -7,6 +7,7 @@ import com.example.shortener.domain.Errors;
 import com.example.shortener.service.CodeGenerator;
 import java.util.HashSet;
 import java.util.Set;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -15,11 +16,13 @@ class CodeGeneratorTest {
 
     private final CodeGenerator codes = new CodeGenerator();
 
+    @Tag("AC-link_creation-2")
     @Test
     void generatesBase62CodesOfTheRequestedLength() {
         assertThat(codes.generate(9)).hasSize(9).matches("[0-9A-Za-z]{9}");
     }
 
+    @Tag("AC-link_creation-2")
     @Test
     void codesAreNotSequential() {
         Set<String> seen = new HashSet<>();
@@ -29,6 +32,7 @@ class CodeGeneratorTest {
         assertThat(seen).hasSize(500);
     }
 
+    @Tag("AC-custom_alias-1")
     @ParameterizedTest
     @ValueSource(strings = {"abc", "spring-sale", "Q4_promo", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
     void acceptsValidAliases(String alias) {

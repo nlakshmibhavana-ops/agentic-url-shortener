@@ -113,7 +113,7 @@
 +
 --- /dev/null
 +++ b/src/test/java/com/example/shortener/integration/RedirectPerformanceTest.java
-@@ -1,0 +1,79 @@
+@@ -1,0 +1,83 @@
 +package com.example.shortener.integration;
 +
 +import static org.assertj.core.api.Assertions.assertThat;
@@ -127,6 +127,7 @@
 +import java.util.List;
 +import java.util.regex.Matcher;
 +import java.util.regex.Pattern;
++import org.junit.jupiter.api.Tag;
 +import org.junit.jupiter.api.BeforeEach;
 +import org.junit.jupiter.api.Test;
 +import org.springframework.beans.factory.annotation.Autowired;
@@ -158,6 +159,8 @@
 +        return m.group(1);
 +    }
 +
++    @Tag("AC-performance-1")
++    @Tag("AC-redirect_cache-3")
 +    @Test
 +    void redirectP95IsUnder50Ms() {
 +        String code = create("{\"url\":\"https://example.com\"}");
@@ -175,6 +178,7 @@
 +        assertThat(p95).as("p95 %.1f ms", p95 / 1e6).isLessThan(50_000_000L);
 +    }
 +
++    @Tag("AC-redirect_cache-2")
 +    @Test
 +    void deleteInvalidatesTheCachedRedirect() {
 +        String code = create("{\"url\":\"https://example.com\"}");
@@ -195,7 +199,7 @@
 +
 --- /dev/null
 +++ b/src/test/java/com/example/shortener/unit/TtlCacheTest.java
-@@ -1,0 +1,45 @@
+@@ -1,0 +1,48 @@
 +package com.example.shortener.unit;
 +
 +import static org.assertj.core.api.Assertions.assertThat;
@@ -203,12 +207,14 @@
 +import com.example.shortener.service.TtlCache;
 +import com.example.shortener.support.MutableClock;
 +import java.time.Duration;
++import org.junit.jupiter.api.Tag;
 +import org.junit.jupiter.api.Test;
 +
 +class TtlCacheTest {
 +
 +    private final MutableClock clock = new MutableClock();
 +
++    @Tag("AC-redirect_cache-1")
 +    @Test
 +    void getPutAndExpiry() {
 +        TtlCache<Integer> cache = new TtlCache<>(10, Duration.ofSeconds(30), clock);
@@ -218,6 +224,7 @@
 +        assertThat(cache.get("a")).isEmpty();
 +    }
 +
++    @Tag("AC-redirect_cache-1")
 +    @Test
 +    void leastRecentlyUsedEntriesAreEvicted() {
 +        TtlCache<Integer> cache = new TtlCache<>(2, Duration.ofSeconds(30), clock);
