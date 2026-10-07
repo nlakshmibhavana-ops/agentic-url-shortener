@@ -1,0 +1,22 @@
+--- a/src/main/java/com/example/linkly/LinkController.java
++++ b/src/main/java/com/example/linkly/LinkController.java
+@@ -42,6 +42,7 @@
+                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "not found"));
+         store.hit(code);
+         return ResponseEntity.status(HttpStatus.MOVED_PERMANENTLY)
++                .header("Cache-Control", "no-store")
+                 .location(URI.create((String) row.get("URL")))
+                 .build();
+     }
+--- a/src/main/java/com/example/linkly/LinkStore.java
++++ b/src/main/java/com/example/linkly/LinkStore.java
+@@ -51,8 +51,7 @@
+     }
+ 
+     public void hit(String code) {
+-        Integer clicks = jdbc.queryForObject("SELECT clicks FROM urls WHERE code = ?", Integer.class, code);
+-        jdbc.update("UPDATE urls SET clicks = ? WHERE code = ?", clicks + 1, code);
++        jdbc.update("UPDATE urls SET clicks = clicks + 1 WHERE code = ?", code);
+     }
+ }
+ 

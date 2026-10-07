@@ -1,0 +1,34 @@
+{
+  "requests" : {
+    "analytics.unique_visitors@130430797cc067c9" : {
+      "node" : "analytics.unique_visitors",
+      "subject" : "130430797cc067c9",
+      "summary" : "Q-PRIVACY=hashed: unique visitors via daily-rotating HMAC; raw IPs never stored\nchange: Q-PRIVACY=hashed: unique visitors via daily-rotating HMAC; raw IPs never stored (digest 130430797cc067c9)\nfiles: src/main/java/com/example/shortener/config/ShortenerProperties.java, src/main/java/com/example/shortener/domain/Click.java, src/main/java/com/example/shortener/domain/LinkStats.java, src/main/java/com/example/shortener/service/LinkRepository.java, src/main/java/com/example/shortener/service/LinkService.java, src/main/java/com/example/shortener/web/Dtos.java, src/main/java/com/example/shortener/web/LinkController.java, src/main/java/com/example/shortener/web/RedirectController.java, src/main/resources/db/migration/V2__visitor_hash.sql, src/test/java/com/example/shortener/integration/VisitorAnalyticsTest.java\nValidation evidence:\n[x] build: compiled, checkstyle clean, [ApiIntegrationTest, LinkServiceTest, VisitorAnalyticsTest] passed",
+      "reasons" : [ "DATA-001 src/main/resources/db/migration/V2__visitor_hash.sql: schema change against an existing database" ],
+      "requested_at" : 1.791328448741E9
+    },
+    "release@9a93e54da178b3f7" : {
+      "node" : "release",
+      "subject" : "9a93e54da178b3f7",
+      "summary" : "Cut the release (version, notes) after human approval\nchange: Release 1.1.0 (digest 9a93e54da178b3f7)\nfiles: RELEASE_NOTES.md, VERSION, pom.xml\n[x] all tests pass: 74 passed / 0 failed\n[x] line coverage >= 90.0%: 93.9%\n[x] checkstyle clean: 0 issues\n[x] no security findings: 0 findings\n[x] docs generated: openapi.json, docs/API.md, docs/DESIGN.md, CHANGELOG.md\n[x] no blocking questions open: []\nValidation evidence:\n[x] smoke: packaged JAR started; GET /readyz -> 200; POST /api/v1/links -> 201; GET /gvbQCaq -> 302; GET /api/v1/links/gvbQCaq/stats -> 200",
+      "reasons" : [ "high-impact stage 'release'", "CHG-002 pom.xml: modifies a protected file" ],
+      "requested_at" : 1.791328511805E9
+    }
+  },
+  "decisions" : {
+    "analytics.unique_visitors@130430797cc067c9" : {
+      "status" : "approved",
+      "by" : "reviewer",
+      "comment" : "no raw IPs; additive migration",
+      "decided_at" : 1.791328449798E9,
+      "waited_s" : 1.1
+    },
+    "release@9a93e54da178b3f7" : {
+      "status" : "approved",
+      "by" : "reviewer",
+      "comment" : "",
+      "decided_at" : 1.791328513047E9,
+      "waited_s" : 1.2
+    }
+  }
+}

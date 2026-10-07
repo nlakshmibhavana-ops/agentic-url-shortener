@@ -1,0 +1,43 @@
+--- /dev/null
++++ b/RELEASE_NOTES.md
+@@ -1,0 +1,24 @@
++# Release 1.1.0
++
++Product ask: safer links, marketing analytics, fast redirects
++
++## Changes
++
++- Q-PERF: bounded TTL read-through cache on the redirect path (p95 < 50 ms)
++- Q-SAFETY: configurable domain denylist (incl. subdomains)
++- Q-PRIVACY=hashed: unique visitors via daily-rotating HMAC; raw IPs never stored
++
++## Evidence
++
++- [x] all tests pass: 74 passed / 0 failed
++- [x] line coverage >= 90.0%: 93.9%
++- [x] checkstyle clean: 0 issues
++- [x] no security findings: 0 findings
++- [x] docs generated: openapi.json, docs/API.md, docs/DESIGN.md, CHANGELOG.md
++- [x] no blocking questions open: []
++
++## Known risks / follow-ups
++
++- assumption: Q-PERF: assumed 'p95 < 50 ms in-process (read-through cache, no new infrastructure)' (non-blocking; confirm or override)
++- assumption: Q-SAFETY: assumed 'Add a configurable domain denylist for known-bad domains' (non-blocking; confirm or override)
++
+--- /dev/null
++++ b/VERSION
+@@ -1,0 +1,2 @@
++1.1.0
++
+--- a/pom.xml
++++ b/pom.xml
+@@ -13,7 +13,7 @@
+ 
+   <groupId>com.example</groupId>
+   <artifactId>shortener</artifactId>
+-  <version>1.0.0</version>
++  <version>1.1.0</version>
+   <name>shortener</name>
+   <description>URL shortener with analytics, rate limiting and safe-target validation</description>
+ 

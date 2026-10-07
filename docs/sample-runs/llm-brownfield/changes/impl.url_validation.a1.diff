@@ -1,0 +1,48 @@
+--- a/src/main/java/com/example/linkly/LinkController.java
++++ b/src/main/java/com/example/linkly/LinkController.java
+@@ -16,9 +16,11 @@
+ public class LinkController {
+ 
+     private final LinkStore store;
++    private final UrlValidator validator;
+ 
+-    public LinkController(LinkStore store) {
++    public LinkController(LinkStore store, UrlValidator validator) {
+         this.store = store;
++        this.validator = validator;
+     }
+ 
+     public record ShortenRequest(String url) {
+@@ -26,6 +28,9 @@
+ 
+     @PostMapping("/shorten")
+     public Map<String, String> shorten(@RequestBody ShortenRequest body) {
++        if (!validator.isValid(body.url())) {
++            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unsafe URL");
++        }
+         String code = store.create(body.url());
+         return Map.of("code", code, "short", "/r/" + code);
+     }
+--- /dev/null
++++ b/src/main/java/com/example/linkly/UrlValidator.java
+@@ -1,0 +1,20 @@
++package com.example.linkly;
++
++import org.springframework.stereotype.Component;
++
++@Component
++public class UrlValidator {
++
++    private static final List<String> UNSAFE_SCHEMES = List.of(
++            "javascript", "vbscript", "data", "file"
++    );
++
++    public boolean isValid(String url) {
++        if (url == null || url.isEmpty()) {
++            return false;
++        }
++        String scheme = url.split("://")[0].toLowerCase();
++        return !UNSAFE_SCHEMES.contains(scheme);
++    }
++}
++

@@ -1,0 +1,27 @@
+--- a/src/main/java/com/example/linkly/LinkController.java
++++ b/src/main/java/com/example/linkly/LinkController.java
+@@ -41,8 +41,10 @@
+         Map<String, Object> row = store.lookup(code)
+                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "not found"));
+         store.hit(code);
+-        return ResponseEntity.status(HttpStatus.MOVED_PERMANENTLY)
++        // 302 + no-store: a cached 301 never reaches us again, so its clicks went uncounted.
++        return ResponseEntity.status(HttpStatus.FOUND)
+                 .location(URI.create((String) row.get("URL")))
++                .header("Cache-Control", "private, no-store")
+                 .build();
+     }
+ 
+--- a/src/main/java/com/example/linkly/LinkStore.java
++++ b/src/main/java/com/example/linkly/LinkStore.java
+@@ -51,8 +51,8 @@
+     }
+ 
+     public void hit(String code) {
+-        Integer clicks = jdbc.queryForObject("SELECT clicks FROM urls WHERE code = ?", Integer.class, code);
+-        jdbc.update("UPDATE urls SET clicks = ? WHERE code = ?", clicks + 1, code);
++        // One atomic statement: the old read-then-write lost updates under concurrent clicks.
++        jdbc.update("UPDATE urls SET clicks = clicks + 1 WHERE code = ?", code);
+     }
+ }
+ 

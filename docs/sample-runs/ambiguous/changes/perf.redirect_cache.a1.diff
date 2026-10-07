@@ -1,0 +1,243 @@
+--- a/src/main/java/com/example/shortener/config/ShortenerProperties.java
++++ b/src/main/java/com/example/shortener/config/ShortenerProperties.java
+@@ -13,6 +13,8 @@
+         @DefaultValue("2048") int maxUrlLength,
+         @DefaultValue("60") int rateLimitPerMinute,
+         @DefaultValue("false") boolean allowPrivateTargets,
++        @DefaultValue("10000") int redirectCacheSize,
++        @DefaultValue("30") int redirectCacheTtlSeconds,
+         @DefaultValue("true") boolean asyncClicks) {
+ 
+     public ShortenerProperties {
+--- a/src/main/java/com/example/shortener/service/LinkService.java
++++ b/src/main/java/com/example/shortener/service/LinkService.java
+@@ -27,12 +27,16 @@
+     private final CodeGenerator codes;
+     private final ShortenerProperties props;
+     private final Clock clock;
++    private final TtlCache<Link> cache;
+ 
+     public LinkService(LinkRepository repo, CodeGenerator codes, ShortenerProperties props, Clock clock) {
+         this.repo = repo;
+         this.codes = codes;
+         this.props = props;
+         this.clock = clock;
++        // Bounded staleness across instances: entries live at most redirectCacheTtlSeconds.
++        this.cache = new TtlCache<>(props.redirectCacheSize(),
++                Duration.ofSeconds(props.redirectCacheTtlSeconds()), clock);
+     }
+ 
+     public record Created(Link link, boolean created) {
+@@ -84,7 +88,13 @@
+ 
+     /** Looks up a link for redirecting. */
+     public Link resolve(String code) {
+-        Link link = repo.find(code).orElseThrow(() -> new Errors.NotFound(code));
++        Link link = cache.get(code).orElse(null);
++        if (link == null) {
++            // Misses are not cached, so a newly created alias works at once.
++            link = repo.find(code).orElseThrow(() -> new Errors.NotFound(code));
++            cache.put(code, link);
++        }
++        // Expiry and deletion are still checked on every hit, cached or not.
+         if (link.isGone(clock.instant())) {
+             throw new Errors.Gone(code);
+         }
+@@ -99,6 +109,7 @@
+     public void delete(String code, String owner) {
+         getOwned(code, owner);
+         repo.softDelete(code, clock.instant());
++        cache.invalidate(code);
+     }
+ 
+     public void recordClick(String code, String referrer, String userAgent) {
+--- /dev/null
++++ b/src/main/java/com/example/shortener/service/TtlCache.java
+@@ -1,0 +1,57 @@
++package com.example.shortener.service;
++
++import java.time.Clock;
++import java.time.Duration;
++import java.time.Instant;
++import java.util.Iterator;
++import java.util.LinkedHashMap;
++import java.util.Map;
++import java.util.Optional;
++
++/** Bounded, thread-safe TTL cache (least recently used entries evicted) for the redirect hot path. */
++public class TtlCache<V> {
++
++    private record Entry<V>(V value, Instant expires) {
++    }
++
++    private final int maxSize;
++    private final Duration ttl;
++    private final Clock clock;
++    private final Map<String, Entry<V>> entries = new LinkedHashMap<>(16, 0.75f, true);
++
++    public TtlCache(int maxSize, Duration ttl, Clock clock) {
++        this.maxSize = maxSize;
++        this.ttl = ttl;
++        this.clock = clock;
++    }
++
++    public synchronized Optional<V> get(String key) {
++        Entry<V> entry = entries.get(key);
++        if (entry == null) {
++            return Optional.empty();
++        }
++        if (!entry.expires().isAfter(clock.instant())) {
++            entries.remove(key);
++            return Optional.empty();
++        }
++        return Optional.of(entry.value());
++    }
++
++    public synchronized void put(String key, V value) {
++        entries.put(key, new Entry<>(value, clock.instant().plus(ttl)));
++        Iterator<String> eldest = entries.keySet().iterator();
++        while (entries.size() > maxSize) {
++            eldest.next();
++            eldest.remove();
++        }
++    }
++
++    public synchronized void invalidate(String key) {
++        entries.remove(key);
++    }
++
++    public synchronized int size() {
++        return entries.size();
++    }
++}
++
+--- /dev/null
++++ b/src/test/java/com/example/shortener/integration/RedirectPerformanceTest.java
+@@ -1,0 +1,79 @@
++package com.example.shortener.integration;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import com.example.shortener.support.Http;
++import com.example.shortener.support.IntegrationTest;
++import com.example.shortener.support.MutableClock;
++import java.time.Duration;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.web.server.LocalServerPort;
++
++/** Q-PERF: the agreed objective is redirect p95 under 50 ms in-process. */
++@IntegrationTest
++class RedirectPerformanceTest {
++
++    private static final String[] AUTH = {"X-API-Key", "test-key-2"};
++
++    @LocalServerPort
++    int port;
++
++    @Autowired
++    MutableClock clock;
++
++    Http http;
++
++    @BeforeEach
++    void setUp() {
++        http = new Http(port);
++        clock.advance(Duration.ofMinutes(1));
++    }
++
++    private String create(String json) {
++        Matcher m = Pattern.compile("\"code\":\"([^\"]+)\"").matcher(http.post("/api/v1/links", json, AUTH).body());
++        assertThat(m.find()).isTrue();
++        return m.group(1);
++    }
++
++    @Test
++    void redirectP95IsUnder50Ms() {
++        String code = create("{\"url\":\"https://example.com\"}");
++        for (int i = 0; i < 20; i++) {
++            http.get("/" + code); // warm-up: JIT and connection pool
++        }
++        List<Long> nanos = new ArrayList<>();
++        for (int i = 0; i < 200; i++) {
++            long started = System.nanoTime();
++            assertThat(http.get("/" + code).statusCode()).isEqualTo(302);
++            nanos.add(System.nanoTime() - started);
++        }
++        Collections.sort(nanos);
++        long p95 = nanos.get((int) (nanos.size() * 0.95) - 1);
++        assertThat(p95).as("p95 %.1f ms", p95 / 1e6).isLessThan(50_000_000L);
++    }
++
++    @Test
++    void deleteInvalidatesTheCachedRedirect() {
++        String code = create("{\"url\":\"https://example.com\"}");
++        assertThat(http.get("/" + code).statusCode()).isEqualTo(302);
++        assertThat(http.send("DELETE", "/api/v1/links/" + code, null, AUTH).statusCode()).isEqualTo(204);
++        assertThat(http.get("/" + code).statusCode()).isEqualTo(410);
++    }
++
++    @Test
++    void cachedLinkStillExpires() {
++        String expires = clock.instant().plusSeconds(10).toString();
++        String code = create("{\"url\":\"https://example.com\",\"expires_at\":\"" + expires + "\"}");
++        assertThat(http.get("/" + code).statusCode()).isEqualTo(302);
++        clock.advance(Duration.ofSeconds(11));
++        assertThat(http.get("/" + code).statusCode()).isEqualTo(410);
++    }
++}
++
+--- /dev/null
++++ b/src/test/java/com/example/shortener/unit/TtlCacheTest.java
+@@ -1,0 +1,45 @@
++package com.example.shortener.unit;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import com.example.shortener.service.TtlCache;
++import com.example.shortener.support.MutableClock;
++import java.time.Duration;
++import org.junit.jupiter.api.Test;
++
++class TtlCacheTest {
++
++    private final MutableClock clock = new MutableClock();
++
++    @Test
++    void getPutAndExpiry() {
++        TtlCache<Integer> cache = new TtlCache<>(10, Duration.ofSeconds(30), clock);
++        cache.put("a", 1);
++        assertThat(cache.get("a")).contains(1);
++        clock.advance(Duration.ofSeconds(30));
++        assertThat(cache.get("a")).isEmpty();
++    }
++
++    @Test
++    void leastRecentlyUsedEntriesAreEvicted() {
++        TtlCache<Integer> cache = new TtlCache<>(2, Duration.ofSeconds(30), clock);
++        cache.put("a", 1);
++        cache.put("b", 2);
++        cache.get("a");
++        cache.put("c", 3);
++        assertThat(cache.get("a")).contains(1);
++        assertThat(cache.get("b")).isEmpty();
++        assertThat(cache.get("c")).contains(3);
++        assertThat(cache.size()).isEqualTo(2);
++    }
++
++    @Test
++    void invalidate() {
++        TtlCache<Integer> cache = new TtlCache<>(2, Duration.ofSeconds(30), clock);
++        cache.put("a", 1);
++        cache.invalidate("a");
++        cache.invalidate("missing");
++        assertThat(cache.get("a")).isEmpty();
++    }
++}
++

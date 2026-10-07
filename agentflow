@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Launcher: builds the orchestrator JAR on first use, then runs it from the project root.
+set -euo pipefail
+HOME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JAR="$HOME_DIR/target/agentflow.jar"
+if [ ! -f "$JAR" ] || [ -n "$(find "$HOME_DIR/src" "$HOME_DIR/pom.xml" -newer "$JAR" -print -quit 2>/dev/null)" ]; then
+  echo "building agentflow..." >&2
+  (cd "$HOME_DIR" && mvn -q -B -DskipTests package) >&2
+fi
+exec java -Dagentflow.home="$HOME_DIR" -jar "$JAR" "$@"

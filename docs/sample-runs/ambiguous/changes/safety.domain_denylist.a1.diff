@@ -1,0 +1,132 @@
+--- a/src/main/java/com/example/shortener/config/ShortenerProperties.java
++++ b/src/main/java/com/example/shortener/config/ShortenerProperties.java
+@@ -13,6 +13,7 @@
+         @DefaultValue("2048") int maxUrlLength,
+         @DefaultValue("60") int rateLimitPerMinute,
+         @DefaultValue("false") boolean allowPrivateTargets,
++        @DefaultValue List<String> blockedDomains,
+         @DefaultValue("10000") int redirectCacheSize,
+         @DefaultValue("30") int redirectCacheTtlSeconds,
+         @DefaultValue("true") boolean asyncClicks) {
+--- a/src/main/java/com/example/shortener/service/LinkService.java
++++ b/src/main/java/com/example/shortener/service/LinkService.java
+@@ -44,7 +44,7 @@
+ 
+     public Created create(String url, String owner, String alias, Instant expiresAt, String idempotencyKey) {
+         String target = UrlValidator.validate(url, props.maxUrlLength(), props.baseUrl(),
+-                props.allowPrivateTargets());
++                props.allowPrivateTargets(), props.blockedDomains());
+         Instant now = clock.instant();
+         if (expiresAt != null && !expiresAt.isAfter(now)) {
+             throw new Errors.InvalidExpiry("expires_at must be in the future");
+--- a/src/main/java/com/example/shortener/service/UrlValidator.java
++++ b/src/main/java/com/example/shortener/service/UrlValidator.java
+@@ -5,6 +5,7 @@
+ import java.net.InetAddress;
+ import java.net.URI;
+ import java.net.URISyntaxException;
++import java.util.List;
+ import java.util.Locale;
+ import java.util.Set;
+ import java.util.regex.Pattern;
+@@ -22,6 +23,11 @@
+     }
+ 
+     public static String validate(String url, int maxLength, String baseUrl, boolean allowPrivate) {
++        return validate(url, maxLength, baseUrl, allowPrivate, List.of());
++    }
++
++    public static String validate(String url, int maxLength, String baseUrl, boolean allowPrivate,
++            List<String> blockedDomains) {
+         if (url == null || url.isBlank()) {
+             throw new Errors.InvalidUrl("url is required");
+         }
+@@ -59,6 +65,12 @@
+         if (!allowPrivate && isPrivateHost(host)) {
+             throw new Errors.InvalidUrl("private, loopback and internal hosts are not allowed");
+         }
++        for (String domain : blockedDomains) {
++            String blocked = domain.strip().toLowerCase(Locale.ROOT);
++            if (!blocked.isEmpty() && (host.equals(blocked) || host.endsWith("." + blocked))) {
++                throw new Errors.InvalidUrl("target domain is blocked");
++            }
++        }
+         String own = URI.create(baseUrl).getHost();
+         if (own != null && host.equals(own.toLowerCase(Locale.ROOT))) {
+             throw new Errors.InvalidUrl("cannot shorten a link to this service");
+--- /dev/null
++++ b/src/test/java/com/example/shortener/integration/DenylistApiTest.java
+@@ -1,0 +1,25 @@
++package com.example.shortener.integration;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import com.example.shortener.support.Http;
++import com.example.shortener.support.IntegrationTest;
++import java.net.http.HttpResponse;
++import org.junit.jupiter.api.Test;
++import org.springframework.boot.test.web.server.LocalServerPort;
++
++@IntegrationTest
++class DenylistApiTest {
++
++    @LocalServerPort
++    int port;
++
++    @Test
++    void blockedDomainIsRejectedThroughTheApi() {
++        HttpResponse<String> response = new Http(port).post("/api/v1/links",
++                "{\"url\":\"https://login.evil.example/reset\"}", "X-API-Key", "test-key-2");
++        assertThat(response.statusCode()).isEqualTo(400);
++        assertThat(response.body()).contains("\"error\":\"invalid_url\"", "blocked");
++    }
++}
++
+--- a/src/test/java/com/example/shortener/support/IntegrationTest.java
++++ b/src/test/java/com/example/shortener/support/IntegrationTest.java
+@@ -15,7 +15,8 @@
+     "shortener.base-url=http://sho.rt",
+     "shortener.api-keys=test-key-1,test-key-2,test-key-limits",
+     "shortener.rate-limit-per-minute=5",
+-    "shortener.async-clicks=false"
++    "shortener.async-clicks=false",
++    "shortener.blocked-domains=evil.example,phish.test"
+ })
+ @Import(TestClockConfig.class)
+ public @interface IntegrationTest {
+--- /dev/null
++++ b/src/test/java/com/example/shortener/unit/DenylistTest.java
+@@ -1,0 +1,33 @@
++package com.example.shortener.unit;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++
++import com.example.shortener.domain.Errors;
++import com.example.shortener.service.UrlValidator;
++import java.util.List;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
++
++/** Q-SAFETY: a configurable domain denylist that also covers subdomains. */
++class DenylistTest {
++
++    private static final List<String> BLOCKED = List.of("evil.example", "phish.test");
++
++    private static String check(String url) {
++        return UrlValidator.validate(url, 2048, "http://sho.rt", false, BLOCKED);
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"https://evil.example/x", "https://login.evil.example/", "http://PHISH.test"})
++    void blocksListedDomainsAndTheirSubdomains(String url) {
++        assertThatThrownBy(() -> check(url)).isInstanceOf(Errors.InvalidUrl.class).hasMessageContaining("blocked");
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"https://notevil.example/", "https://evil.example.com/"})
++    void allowsLookAlikeButDifferentDomains(String url) {
++        assertThat(check(url)).isNotBlank();
++    }
++}
++

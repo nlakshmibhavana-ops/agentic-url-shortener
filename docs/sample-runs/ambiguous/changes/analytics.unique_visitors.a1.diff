@@ -1,0 +1,313 @@
+--- a/src/main/java/com/example/shortener/config/ShortenerProperties.java
++++ b/src/main/java/com/example/shortener/config/ShortenerProperties.java
+@@ -13,6 +13,8 @@
+         @DefaultValue("2048") int maxUrlLength,
+         @DefaultValue("60") int rateLimitPerMinute,
+         @DefaultValue("false") boolean allowPrivateTargets,
++        // Key for visitor hashes. Unset: a random per-process key (unique counts reset on restart).
++        @DefaultValue("") String analyticsKey,
+         @DefaultValue List<String> blockedDomains,
+         @DefaultValue("10000") int redirectCacheSize,
+         @DefaultValue("30") int redirectCacheTtlSeconds,
+--- a/src/main/java/com/example/shortener/domain/Click.java
++++ b/src/main/java/com/example/shortener/domain/Click.java
+@@ -2,6 +2,6 @@
+ 
+ import java.time.Instant;
+ 
+-public record Click(Instant clickedAt, String referrerHost, String userAgentFamily) {
++public record Click(Instant clickedAt, String referrerHost, String userAgentFamily, String visitorHash) {
+ }
+ 
+--- a/src/main/java/com/example/shortener/domain/LinkStats.java
++++ b/src/main/java/com/example/shortener/domain/LinkStats.java
+@@ -2,7 +2,8 @@
+ 
+ import java.util.List;
+ 
+-public record LinkStats(String code, long totalClicks, List<DayCount> daily, List<HostCount> topReferrers) {
++public record LinkStats(String code, long totalClicks, List<DayCount> daily, List<HostCount> topReferrers,
++        long uniqueVisitors) {
+ 
+     public record DayCount(String date, long clicks) {
+     }
+--- a/src/main/java/com/example/shortener/service/LinkRepository.java
++++ b/src/main/java/com/example/shortener/service/LinkRepository.java
+@@ -65,10 +65,10 @@
+     /** One transaction, and an atomic increment: no lost updates under concurrent clicks. */
+     @Transactional
+     public void recordClick(String code, Click click) {
+-        jdbc.sql("INSERT INTO clicks (code, clicked_at, clicked_day, referrer_host, user_agent_family)"
+-                        + " VALUES (?, ?, ?, ?, ?)")
++        jdbc.sql("INSERT INTO clicks (code, clicked_at, clicked_day, referrer_host, user_agent_family,"
++                        + " visitor_hash) VALUES (?, ?, ?, ?, ?, ?)")
+                 .params(code, ts(click.clickedAt()), click.clickedAt().toString().substring(0, 10),
+-                        click.referrerHost(), click.userAgentFamily())
++                        click.referrerHost(), click.userAgentFamily(), click.visitorHash())
+                 .update();
+         jdbc.sql("UPDATE links SET click_count = click_count + 1 WHERE code = ?").param(code).update();
+     }
+@@ -80,6 +80,13 @@
+                 .query((rs, i) -> new DayCount(rs.getString("clicked_day"), rs.getLong("n"))).list();
+     }
+ 
++    /** Distinct daily visitor hashes: a returning visitor counts once per day in the window. */
++    public long uniqueVisitors(String code, Instant since) {
++        return jdbc.sql("SELECT COUNT(DISTINCT visitor_hash) FROM clicks WHERE code = ? AND clicked_at >= ?"
++                        + " AND visitor_hash IS NOT NULL")
++                .params(code, ts(since)).query(Long.class).single();
++    }
++
+     public List<HostCount> topReferrers(String code, int limit) {
+         return jdbc.sql("SELECT COALESCE(referrer_host, 'direct') AS host, COUNT(*) AS n FROM clicks"
+                         + " WHERE code = ? GROUP BY COALESCE(referrer_host, 'direct') ORDER BY n DESC, host LIMIT ?")
+--- a/src/main/java/com/example/shortener/service/LinkService.java
++++ b/src/main/java/com/example/shortener/service/LinkService.java
+@@ -8,13 +8,17 @@
+ import java.net.URI;
+ import java.nio.charset.StandardCharsets;
+ import java.security.MessageDigest;
++import java.security.InvalidKeyException;
+ import java.security.NoSuchAlgorithmException;
++import java.security.SecureRandom;
+ import java.time.Clock;
+ import java.time.Duration;
+ import java.time.Instant;
+ import java.util.HexFormat;
+ import java.util.Locale;
+ import java.util.Optional;
++import javax.crypto.Mac;
++import javax.crypto.spec.SecretKeySpec;
+ import org.springframework.stereotype.Service;
+ 
+ /** Business rules for creating, resolving and reporting on links. */
+@@ -27,6 +31,7 @@
+     private final CodeGenerator codes;
+     private final ShortenerProperties props;
+     private final Clock clock;
++    private final byte[] visitorKey;
+     private final TtlCache<Link> cache;
+ 
+     public LinkService(LinkRepository repo, CodeGenerator codes, ShortenerProperties props, Clock clock) {
+@@ -34,6 +39,8 @@
+         this.codes = codes;
+         this.props = props;
+         this.clock = clock;
++        this.visitorKey = props.analyticsKey().isEmpty() ? randomKey()
++                : props.analyticsKey().getBytes(StandardCharsets.UTF_8);
+         // Bounded staleness across instances: entries live at most redirectCacheTtlSeconds.
+         this.cache = new TtlCache<>(props.redirectCacheSize(),
+                 Duration.ofSeconds(props.redirectCacheTtlSeconds()), clock);
+@@ -113,6 +120,10 @@
+     }
+ 
+     public void recordClick(String code, String referrer, String userAgent) {
++        recordClick(code, referrer, userAgent, null);
++    }
++
++    public void recordClick(String code, String referrer, String userAgent, String clientIp) {
+         String host = null;
+         if (referrer != null) {
+             try {
+@@ -121,14 +132,38 @@
+                 host = null;
+             }
+         }
+-        repo.recordClick(code, new Click(clock.instant(), host, userAgentFamily(userAgent)));
++        repo.recordClick(code, new Click(clock.instant(), host, userAgentFamily(userAgent),
++                visitorHash(clientIp, userAgent)));
+     }
+ 
++    /** Keyed hash of (day, IP, user agent). The raw IP never leaves this method. */
++    public String visitorHash(String clientIp, String userAgent) {
++        if (clientIp == null || clientIp.isEmpty()) {
++            return null;
++        }
++        String message = clock.instant().toString().substring(0, 10) + "|" + clientIp + "|"
++                + (userAgent == null ? "" : userAgent);
++        try {
++            Mac mac = Mac.getInstance("HmacSHA256");
++            mac.init(new SecretKeySpec(visitorKey, "HmacSHA256"));
++            return HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8)))
++                    .substring(0, 16);
++        } catch (NoSuchAlgorithmException | InvalidKeyException e) {
++            throw new IllegalStateException(e);
++        }
++    }
++
++    private static byte[] randomKey() {
++        byte[] key = new byte[32];
++        new SecureRandom().nextBytes(key);
++        return key;
++    }
++
+     public LinkStats stats(String code, String owner, int days) {
+         Link link = getOwned(code, owner);
+         Instant since = clock.instant().minus(Duration.ofDays(days));
+         return new LinkStats(link.code(), link.clickCount(), repo.dailyClicks(code, since),
+-                repo.topReferrers(code, 5));
++                repo.topReferrers(code, 5), repo.uniqueVisitors(code, since));
+     }
+ 
+     public static String ownerId(String apiKey) {
+--- a/src/main/java/com/example/shortener/web/Dtos.java
++++ b/src/main/java/com/example/shortener/web/Dtos.java
+@@ -43,7 +43,8 @@
+             String code,
+             @JsonProperty("total_clicks") long totalClicks,
+             List<DailyClicks> daily,
+-            @JsonProperty("top_referrers") List<ReferrerCount> topReferrers) {
++            @JsonProperty("top_referrers") List<ReferrerCount> topReferrers,
++            @JsonProperty("unique_visitors") long uniqueVisitors) {
+     }
+ 
+     public record ErrorResponse(String error, String detail, @JsonProperty("request_id") String requestId) {
+--- a/src/main/java/com/example/shortener/web/LinkController.java
++++ b/src/main/java/com/example/shortener/web/LinkController.java
+@@ -75,7 +75,8 @@
+         LinkStats stats = service.stats(code, auth.owner(apiKey), Math.max(1, Math.min(days, 365)));
+         return new StatsResponse(stats.code(), stats.totalClicks(),
+                 stats.daily().stream().map(d -> new DailyClicks(d.date(), d.clicks())).toList(),
+-                stats.topReferrers().stream().map(h -> new ReferrerCount(h.host(), h.clicks())).toList());
++                stats.topReferrers().stream().map(h -> new ReferrerCount(h.host(), h.clicks())).toList(),
++                stats.uniqueVisitors());
+     }
+ }
+ 
+--- a/src/main/java/com/example/shortener/web/RedirectController.java
++++ b/src/main/java/com/example/shortener/web/RedirectController.java
+@@ -2,6 +2,7 @@
+ 
+ import com.example.shortener.domain.Link;
+ import com.example.shortener.service.LinkService;
++import jakarta.servlet.http.HttpServletRequest;
+ import java.net.URI;
+ import java.util.concurrent.Executor;
+ import org.springframework.http.HttpHeaders;
+@@ -28,9 +29,11 @@
+     public ResponseEntity<Void> follow(
+             @PathVariable String code,
+             @RequestHeader(value = HttpHeaders.REFERER, required = false) String referer,
+-            @RequestHeader(value = HttpHeaders.USER_AGENT, required = false) String userAgent) {
++            @RequestHeader(value = HttpHeaders.USER_AGENT, required = false) String userAgent,
++            HttpServletRequest request) {
+         Link link = service.resolve(code);
+-        clickExecutor.execute(() -> service.recordClick(link.code(), referer, userAgent));
++        String clientIp = request.getRemoteAddr(); // only ever hashed by the service, never stored
++        clickExecutor.execute(() -> service.recordClick(link.code(), referer, userAgent, clientIp));
+         // 302 + no-store (not 301) so every click reaches the service and is counted.
+         return ResponseEntity.status(HttpStatus.FOUND)
+                 .location(URI.create(link.targetUrl()))
+--- /dev/null
++++ b/src/main/resources/db/migration/V2__visitor_hash.sql
+@@ -1,0 +1,4 @@
++-- Q-PRIVACY = hashed: a daily-rotating keyed hash per visitor. The raw IP is never stored.
++ALTER TABLE clicks ADD COLUMN visitor_hash VARCHAR(16);
++CREATE INDEX idx_clicks_code_visitor ON clicks(code, visitor_hash);
++
+--- /dev/null
++++ b/src/test/java/com/example/shortener/integration/VisitorAnalyticsTest.java
+@@ -1,0 +1,103 @@
++package com.example.shortener.integration;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import com.example.shortener.support.Http;
++import com.example.shortener.support.IntegrationTest;
++import com.example.shortener.support.MutableClock;
++import java.nio.file.Path;
++import java.sql.Connection;
++import java.sql.DriverManager;
++import java.sql.ResultSet;
++import java.sql.SQLException;
++import java.sql.Statement;
++import java.time.Duration;
++import java.util.List;
++import java.util.Map;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++import org.flywaydb.core.Flyway;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.web.server.LocalServerPort;
++import org.springframework.jdbc.core.simple.JdbcClient;
++
++/** Q-PRIVACY (answer: hashed): unique visitors without storing personal data. */
++@IntegrationTest
++class VisitorAnalyticsTest {
++
++    private static final String[] AUTH = {"X-API-Key", "test-key-2"};
++
++    @LocalServerPort
++    int port;
++
++    @Autowired
++    MutableClock clock;
++
++    @Autowired
++    JdbcClient jdbc;
++
++    Http http;
++
++    @BeforeEach
++    void setUp() {
++        http = new Http(port);
++        clock.advance(Duration.ofMinutes(1));
++    }
++
++    private String create() {
++        Matcher m = Pattern.compile("\"code\":\"([^\"]+)\"")
++                .matcher(http.post("/api/v1/links", "{\"url\":\"https://example.com\"}", AUTH).body());
++        assertThat(m.find()).isTrue();
++        return m.group(1);
++    }
++
++    @Test
++    void uniqueVisitorsAreCountedPerDay() {
++        String code = create();
++        http.get("/" + code, "User-Agent", "Mozilla (X11)");
++        http.get("/" + code, "User-Agent", "Mozilla (X11)");
++        http.get("/" + code, "User-Agent", "Mozilla (iPhone)");
++        assertThat(http.get("/api/v1/links/" + code + "/stats", AUTH).body())
++                .contains("\"total_clicks\":3", "\"unique_visitors\":2");
++
++        clock.advance(Duration.ofDays(1)); // the daily key rotates, so the same visitor counts again
++        http.get("/" + code, "User-Agent", "Mozilla (X11)");
++        assertThat(http.get("/api/v1/links/" + code + "/stats", AUTH).body()).contains("\"unique_visitors\":3");
++    }
++
++    @Test
++    void rawIpIsNeverPersisted() {
++        String code = create();
++        http.get("/" + code);
++        List<Map<String, Object>> rows = jdbc.sql("SELECT * FROM clicks WHERE code = ?").param(code)
++                .query().listOfRows();
++        assertThat(rows).isNotEmpty();
++        for (Map<String, Object> row : rows) {
++            assertThat(row.values().toString()).doesNotContain("127.0.0.1", "0:0:0:0:0:0:0:1");
++            assertThat((String) row.get("VISITOR_HASH")).hasSize(16);
++        }
++    }
++
++    @Test
++    void existingDatabaseIsMigrated(@TempDir Path dir) throws SQLException {
++        String url = "jdbc:h2:file:" + dir.resolve("v1");
++        Flyway.configure().dataSource(url, "sa", "").target("1").load().migrate();
++        try (Connection c = DriverManager.getConnection(url, "sa", ""); Statement s = c.createStatement()) {
++            s.execute("INSERT INTO links (code, target_url, owner, created_at) VALUES ('old', 'https://o.example', 'o',"
++                    + " TIMESTAMP WITH TIME ZONE '2026-01-01 00:00:00+00')");
++            s.execute("INSERT INTO clicks (code, clicked_at, clicked_day) VALUES ('old',"
++                    + " TIMESTAMP WITH TIME ZONE '2026-01-01 00:00:00+00', '2026-01-01')");
++        }
++        Flyway.configure().dataSource(url, "sa", "").load().migrate();
++        try (Connection c = DriverManager.getConnection(url, "sa", ""); Statement s = c.createStatement();
++                ResultSet rs = s.executeQuery("SELECT code, visitor_hash FROM clicks")) {
++            assertThat(rs.next()).isTrue();
++            assertThat(rs.getString("code")).isEqualTo("old");
++            assertThat(rs.getString("visitor_hash")).isNull();
++        }
++    }
++}
++

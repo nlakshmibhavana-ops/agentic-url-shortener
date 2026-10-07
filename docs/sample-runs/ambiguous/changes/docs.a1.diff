@@ -1,0 +1,425 @@
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -1,0 +1,8 @@
++# Changelog
++
++## [Unreleased] - Product ask: safer links, marketing analytics, fast redirects
++
++- Q-PERF: bounded TTL read-through cache on the redirect path (p95 < 50 ms)
++- Q-SAFETY: configurable domain denylist (incl. subdomains)
++- Q-PRIVACY=hashed: unique visitors via daily-rotating HMAC; raw IPs never stored
++
+--- /dev/null
++++ b/docs/API.md
+@@ -1,0 +1,14 @@
++# OpenAPI definition API
++
++Generated from the running application's OpenAPI contract (`openapi.json`).
++
++| Method | Path | Operation | Responses |
++|---|---|---|---|
++| POST | `/api/v1/links` | create | 200 |
++| GET | `/api/v1/links/{code}` | get | 200 |
++| DELETE | `/api/v1/links/{code}` | delete | 200 |
++| GET | `/api/v1/links/{code}/stats` | stats | 200 |
++| GET | `/healthz` | healthz | 200 |
++| GET | `/readyz` | readyz | 200 |
++| GET | `/{code}` | follow | 200 |
++
+--- /dev/null
++++ b/docs/DESIGN.md
+@@ -1,0 +1,58 @@
++# Design record
++
++Architecture: layered Spring Boot service: web -> service -> repository (JDBC) -> Flyway-managed schema
++
++## Capabilities
++
++- **analytics**: Per-link total clicks, daily breakdown and top referrer hosts; Click recording never delays the redirect response
++- **domain_denylist**: Targets on a configurable domain denylist (incl. subdomains) are rejected with 400
++- **performance**: Redirect path meets the agreed latency target
++- **redirect**: GET /{code} returns 302 to the target; Unknown codes return 404; deleted or expired codes return 410
++- **redirect_cache**: Hot redirects are served from a bounded in-process TTL cache; Deleting a link invalidates its cache entry immediately; Redirect p95 < 50 ms in-process
++- **unique_visitors**: Stats report unique visitors per link; No raw IP address is ever persisted: visitors are a keyed, daily-rotating hash
++- **url_safety**: Only http(s) targets are accepted; script/data/file schemes are rejected with 400; URLs with embedded credentials are rejected
++
++## Decisions (ADRs)
++
++### ADR-01: Record clicks off the request thread; store referrer host + user-agent family only
++
++Keeps redirect latency independent of analytics writes and minimises personal data.
++
++Alternatives considered: Synchronous write (simpler, slower); Event queue such as Kafka (scales, more infrastructure)
++
++### ADR-02: Configurable domain denylist, matched on domain suffix
++
++Cheap, deterministic, auditable; reputation APIs add a vendor dependency.
++
++Alternatives considered: Google Safe Browsing lookup (external dependency, latency)
++
++### ADR-03: 302 + Cache-Control: no-store for redirects
++
++Every click must reach the service for analytics; 301 is cached by browsers.
++
++Alternatives considered: 301 Moved Permanently (cheaper, but under-counts)
++
++### ADR-04: Bounded in-process TTL cache on the redirect path
++
++Meets p95 < 50 ms with no new infrastructure; the TTL bounds staleness and delete invalidates.
++
++Alternatives considered: Redis or CDN edge cache (needed only for p95 < 10 ms or multi-instance)
++
++### ADR-05: Unique visitors via HMAC-SHA256(key, day | IP | user agent), truncated
++
++Counts uniques per day without storing personal data; the daily key prevents tracking a visitor across days.
++
++Alternatives considered: Store raw IPs (personal data, needs a legal basis); Cookies (consent banner needed)
++
++### ADR-06: Validate targets at the boundary; never fetch them
++
++Blocks script schemes, credential spoofing and internal hosts without network I/O.
++
++Alternatives considered: Fetch-and-inspect targets (SSRF risk, latency)
++
++## Assumptions
++
++- Q-PERF: assumed 'p95 < 50 ms in-process (read-through cache, no new infrastructure)' (non-blocking; confirm or override)
++- Q-SAFETY: assumed 'Add a configurable domain denylist for known-bad domains' (non-blocking; confirm or override)
++
++
+--- /dev/null
++++ b/openapi.json
+@@ -1,0 +1,333 @@
++{
++  "openapi" : "3.1.0",
++  "info" : {
++    "title" : "OpenAPI definition",
++    "version" : "v0"
++  },
++  "servers" : [ {
++    "url" : "http://127.0.0.1:42091",
++    "description" : "Generated server url"
++  } ],
++  "paths" : {
++    "/api/v1/links" : {
++      "post" : {
++        "tags" : [ "link-controller" ],
++        "operationId" : "create",
++        "parameters" : [ {
++          "name" : "X-API-Key",
++          "in" : "header",
++          "required" : false,
++          "schema" : {
++            "type" : "string"
++          }
++        }, {
++          "name" : "Idempotency-Key",
++          "in" : "header",
++          "required" : false,
++          "schema" : {
++            "type" : "string"
++          }
++        } ],
++        "requestBody" : {
++          "content" : {
++            "application/json" : {
++              "schema" : {
++                "$ref" : "#/components/schemas/CreateLinkRequest"
++              }
++            }
++          },
++          "required" : true
++        },
++        "responses" : {
++          "200" : {
++            "description" : "OK",
++            "content" : {
++              "*/*" : {
++                "schema" : {
++                  "$ref" : "#/components/schemas/LinkResponse"
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/{code}" : {
++      "get" : {
++        "tags" : [ "redirect-controller" ],
++        "operationId" : "follow",
++        "parameters" : [ {
++          "name" : "code",
++          "in" : "path",
++          "required" : true,
++          "schema" : {
++            "type" : "string"
++          }
++        }, {
++          "name" : "Referer",
++          "in" : "header",
++          "required" : false,
++          "schema" : {
++            "type" : "string"
++          }
++        }, {
++          "name" : "User-Agent",
++          "in" : "header",
++          "required" : false,
++          "schema" : {
++            "type" : "string"
++          }
++        } ],
++        "responses" : {
++          "200" : {
++            "description" : "OK"
++          }
++        }
++      }
++    },
++    "/readyz" : {
++      "get" : {
++        "tags" : [ "health-controller" ],
++        "operationId" : "readyz",
++        "responses" : {
++          "200" : {
++            "description" : "OK",
++            "content" : {
++              "*/*" : {
++                "schema" : {
++                  "type" : "object",
++                  "additionalProperties" : {
++                    "type" : "string"
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/healthz" : {
++      "get" : {
++        "tags" : [ "health-controller" ],
++        "operationId" : "healthz",
++        "responses" : {
++          "200" : {
++            "description" : "OK",
++            "content" : {
++              "*/*" : {
++                "schema" : {
++                  "type" : "object",
++                  "additionalProperties" : {
++                    "type" : "string"
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/links/{code}" : {
++      "get" : {
++        "tags" : [ "link-controller" ],
++        "operationId" : "get",
++        "parameters" : [ {
++          "name" : "X-API-Key",
++          "in" : "header",
++          "required" : false,
++          "schema" : {
++            "type" : "string"
++          }
++        }, {
++          "name" : "code",
++          "in" : "path",
++          "required" : true,
++          "schema" : {
++            "type" : "string"
++          }
++        } ],
++        "responses" : {
++          "200" : {
++            "description" : "OK",
++            "content" : {
++              "*/*" : {
++                "schema" : {
++                  "$ref" : "#/components/schemas/LinkResponse"
++                }
++              }
++            }
++          }
++        }
++      },
++      "delete" : {
++        "tags" : [ "link-controller" ],
++        "operationId" : "delete",
++        "parameters" : [ {
++          "name" : "X-API-Key",
++          "in" : "header",
++          "required" : false,
++          "schema" : {
++            "type" : "string"
++          }
++        }, {
++          "name" : "code",
++          "in" : "path",
++          "required" : true,
++          "schema" : {
++            "type" : "string"
++          }
++        } ],
++        "responses" : {
++          "200" : {
++            "description" : "OK"
++          }
++        }
++      }
++    },
++    "/api/v1/links/{code}/stats" : {
++      "get" : {
++        "tags" : [ "link-controller" ],
++        "operationId" : "stats",
++        "parameters" : [ {
++          "name" : "X-API-Key",
++          "in" : "header",
++          "required" : false,
++          "schema" : {
++            "type" : "string"
++          }
++        }, {
++          "name" : "code",
++          "in" : "path",
++          "required" : true,
++          "schema" : {
++            "type" : "string"
++          }
++        }, {
++          "name" : "days",
++          "in" : "query",
++          "required" : false,
++          "schema" : {
++            "type" : "integer",
++            "format" : "int32",
++            "default" : 30
++          }
++        } ],
++        "responses" : {
++          "200" : {
++            "description" : "OK",
++            "content" : {
++              "*/*" : {
++                "schema" : {
++                  "$ref" : "#/components/schemas/StatsResponse"
++                }
++              }
++            }
++          }
++        }
++      }
++    }
++  },
++  "components" : {
++    "schemas" : {
++      "CreateLinkRequest" : {
++        "type" : "object",
++        "properties" : {
++          "url" : {
++            "type" : "string",
++            "maxLength" : 2048,
++            "minLength" : 0
++          },
++          "alias" : {
++            "type" : "string",
++            "maxLength" : 32,
++            "minLength" : 3
++          },
++          "expires_at" : {
++            "type" : "string",
++            "format" : "date-time"
++          }
++        },
++        "required" : [ "url" ]
++      },
++      "LinkResponse" : {
++        "type" : "object",
++        "properties" : {
++          "code" : {
++            "type" : "string"
++          },
++          "short_url" : {
++            "type" : "string"
++          },
++          "target_url" : {
++            "type" : "string"
++          },
++          "created_at" : {
++            "type" : "string",
++            "format" : "date-time"
++          },
++          "expires_at" : {
++            "type" : "string",
++            "format" : "date-time"
++          },
++          "click_count" : {
++            "type" : "integer",
++            "format" : "int64"
++          }
++        }
++      },
++      "DailyClicks" : {
++        "type" : "object",
++        "properties" : {
++          "date" : {
++            "type" : "string"
++          },
++          "clicks" : {
++            "type" : "integer",
++            "format" : "int64"
++          }
++        }
++      },
++      "ReferrerCount" : {
++        "type" : "object",
++        "properties" : {
++          "host" : {
++            "type" : "string"
++          },
++          "clicks" : {
++            "type" : "integer",
++            "format" : "int64"
++          }
++        }
++      },
++      "StatsResponse" : {
++        "type" : "object",
++        "properties" : {
++          "code" : {
++            "type" : "string"
++          },
++          "total_clicks" : {
++            "type" : "integer",
++            "format" : "int64"
++          },
++          "daily" : {
++            "type" : "array",
++            "items" : {
++              "$ref" : "#/components/schemas/DailyClicks"
++            }
++          },
++          "top_referrers" : {
++            "type" : "array",
++            "items" : {
++              "$ref" : "#/components/schemas/ReferrerCount"
++            }
++          },
++          "unique_visitors" : {
++            "type" : "integer",
++            "format" : "int64"
++          }
++        }
++      }
++    }
++  }
++}
++

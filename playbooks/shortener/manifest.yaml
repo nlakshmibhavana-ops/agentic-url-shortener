@@ -1,0 +1,263 @@
+# Change catalogue for the greenfield URL shortener (Spring Boot 4, Java 21).
+# Java compiles a module as one unit, so each task delivers its classes together with their
+# tests; a task is verified by building the project and running the tests it declares.
+name: shortener
+package: com.example.shortener
+coverage_min: 90
+docs:
+  app: shortener
+  readme: files/README.md
+serve_props:
+  spring.datasource.url: jdbc:h2:file:{run_dir}/service/shortener
+  shortener.api-keys: dev-key
+smoke_props:
+  shortener.api-keys: smoke-key
+smoke:
+- method: GET
+  path: /healthz
+  expect: 200
+- method: GET
+  path: /readyz
+  expect: 200
+- method: POST
+  path: /api/v1/links
+  json:
+    url: https://example.com/smoke
+  headers:
+    X-API-Key: smoke-key
+  expect: 201
+  save: code
+- method: GET
+  path: /{code}
+  expect: 302
+- method: GET
+  path: /api/v1/links/{code}/stats
+  headers:
+    X-API-Key: smoke-key
+  expect: 200
+tasks:
+- id: scaffold
+  title: Maven project, configuration properties and application entry point
+  capabilities:
+  - platform
+  writes:
+  - pom.xml
+  - checkstyle.xml
+  - src/main/resources/application.properties
+  - src/main/java/com/example/shortener/ShortenerApplication.java
+  - src/main/java/com/example/shortener/config/ShortenerProperties.java
+  ops:
+  - op: write
+    path: pom.xml
+    src: files/pom.xml
+  - op: write
+    path: checkstyle.xml
+    src: files/checkstyle.xml
+  - op: write
+    path: src/main/resources/application.properties
+    src: files/src/main/resources/application.properties
+  - op: write
+    path: src/main/java/com/example/shortener/ShortenerApplication.java
+    src: files/src/main/java/com/example/shortener/ShortenerApplication.java
+  - op: write
+    path: src/main/java/com/example/shortener/config/ShortenerProperties.java
+    src: files/src/main/java/com/example/shortener/config/ShortenerProperties.java
+- id: domain
+  title: 'Domain model: links, clicks, stats and API error types'
+  capabilities:
+  - link_creation
+  - analytics
+  - reliability
+  deps:
+  - scaffold
+  writes:
+  - src/main/java/com/example/shortener/domain/Link.java
+  - src/main/java/com/example/shortener/domain/Click.java
+  - src/main/java/com/example/shortener/domain/LinkStats.java
+  - src/main/java/com/example/shortener/domain/Errors.java
+  ops:
+  - op: write
+    path: src/main/java/com/example/shortener/domain/Link.java
+    src: files/src/main/java/com/example/shortener/domain/Link.java
+  - op: write
+    path: src/main/java/com/example/shortener/domain/Click.java
+    src: files/src/main/java/com/example/shortener/domain/Click.java
+  - op: write
+    path: src/main/java/com/example/shortener/domain/LinkStats.java
+    src: files/src/main/java/com/example/shortener/domain/LinkStats.java
+  - op: write
+    path: src/main/java/com/example/shortener/domain/Errors.java
+    src: files/src/main/java/com/example/shortener/domain/Errors.java
+- id: impl.codes
+  title: Random base62 code generator and custom-alias rules (with unit tests)
+  capabilities:
+  - link_creation
+  - custom_alias
+  deps:
+  - domain
+  writes:
+  - src/main/java/com/example/shortener/service/CodeGenerator.java
+  - src/test/java/com/example/shortener/unit/CodeGeneratorTest.java
+  verify:
+  - src/test/java/com/example/shortener/unit/CodeGeneratorTest.java
+  ops:
+  - op: write
+    path: src/main/java/com/example/shortener/service/CodeGenerator.java
+    src: files/src/main/java/com/example/shortener/service/CodeGenerator.java
+  - op: write
+    path: src/test/java/com/example/shortener/unit/CodeGeneratorTest.java
+    src: files/src/test/java/com/example/shortener/unit/CodeGeneratorTest.java
+- id: impl.validation
+  title: 'Target-URL validation: scheme allowlist, credentials, private hosts, loops'
+  capabilities:
+  - url_safety
+  deps:
+  - domain
+  writes:
+  - src/main/java/com/example/shortener/service/UrlValidator.java
+  - src/test/java/com/example/shortener/unit/UrlValidatorTest.java
+  verify:
+  - src/test/java/com/example/shortener/unit/UrlValidatorTest.java
+  ops:
+  - op: write
+    path: src/main/java/com/example/shortener/service/UrlValidator.java
+    src: files/src/main/java/com/example/shortener/service/UrlValidator.java
+  - op: write
+    path: src/test/java/com/example/shortener/unit/UrlValidatorTest.java
+    src: files/src/test/java/com/example/shortener/unit/UrlValidatorTest.java
+- id: impl.ratelimit
+  title: Token-bucket rate limiter with bounded memory; clock and click executor beans
+  capabilities:
+  - rate_limiting
+  deps:
+  - domain
+  writes:
+  - src/main/java/com/example/shortener/service/TokenBucketRateLimiter.java
+  - src/main/java/com/example/shortener/config/AppConfig.java
+  - src/test/java/com/example/shortener/unit/TokenBucketRateLimiterTest.java
+  verify:
+  - src/test/java/com/example/shortener/unit/TokenBucketRateLimiterTest.java
+  ops:
+  - op: write
+    path: src/main/java/com/example/shortener/service/TokenBucketRateLimiter.java
+    src: files/src/main/java/com/example/shortener/service/TokenBucketRateLimiter.java
+  - op: write
+    path: src/main/java/com/example/shortener/config/AppConfig.java
+    src: files/src/main/java/com/example/shortener/config/AppConfig.java
+  - op: write
+    path: src/test/java/com/example/shortener/unit/TokenBucketRateLimiterTest.java
+    src: files/src/test/java/com/example/shortener/unit/TokenBucketRateLimiterTest.java
+- id: impl.storage
+  title: Flyway schema and JDBC repository for links and click events
+  capabilities:
+  - link_creation
+  - analytics
+  - expiry
+  deps:
+  - domain
+  writes:
+  - src/main/resources/db/migration/V1__init.sql
+  - src/main/java/com/example/shortener/service/LinkRepository.java
+  ops:
+  - op: write
+    path: src/main/resources/db/migration/V1__init.sql
+    src: files/src/main/resources/db/migration/V1__init.sql
+  - op: write
+    path: src/main/java/com/example/shortener/service/LinkRepository.java
+    src: files/src/main/java/com/example/shortener/service/LinkRepository.java
+- id: impl.service
+  title: 'Link service: create/resolve/delete/stats, idempotency, expiry, ownership'
+  capabilities:
+  - link_creation
+  - custom_alias
+  - expiry
+  - analytics
+  - reliability
+  deps:
+  - impl.storage
+  - impl.codes
+  - impl.validation
+  - impl.ratelimit
+  writes:
+  - src/main/java/com/example/shortener/service/LinkService.java
+  - src/test/java/com/example/shortener/support/MutableClock.java
+  - src/test/java/com/example/shortener/support/TestClockConfig.java
+  - src/test/java/com/example/shortener/support/IntegrationTest.java
+  - src/test/java/com/example/shortener/support/Http.java
+  - src/test/java/com/example/shortener/integration/LinkServiceTest.java
+  verify:
+  - src/test/java/com/example/shortener/integration/LinkServiceTest.java
+  ops:
+  - op: write
+    path: src/main/java/com/example/shortener/service/LinkService.java
+    src: files/src/main/java/com/example/shortener/service/LinkService.java
+  - op: write
+    path: src/test/java/com/example/shortener/support/MutableClock.java
+    src: files/src/test/java/com/example/shortener/support/MutableClock.java
+  - op: write
+    path: src/test/java/com/example/shortener/support/TestClockConfig.java
+    src: files/src/test/java/com/example/shortener/support/TestClockConfig.java
+  - op: write
+    path: src/test/java/com/example/shortener/support/IntegrationTest.java
+    src: files/src/test/java/com/example/shortener/support/IntegrationTest.java
+  - op: write
+    path: src/test/java/com/example/shortener/support/Http.java
+    src: files/src/test/java/com/example/shortener/support/Http.java
+  - op: write
+    path: src/test/java/com/example/shortener/integration/LinkServiceTest.java
+    src: files/src/test/java/com/example/shortener/integration/LinkServiceTest.java
+- id: impl.api
+  title: 'HTTP API: auth, error mapping, request ids, health/readiness, home page'
+  capabilities:
+  - link_creation
+  - redirect
+  - analytics
+  - reliability
+  - rate_limiting
+  deps:
+  - impl.service
+  writes:
+  - src/main/java/com/example/shortener/web/Dtos.java
+  - src/main/java/com/example/shortener/web/ApiKeyAuth.java
+  - src/main/java/com/example/shortener/web/LinkController.java
+  - src/main/java/com/example/shortener/web/RedirectController.java
+  - src/main/java/com/example/shortener/web/HealthController.java
+  - src/main/java/com/example/shortener/web/ApiExceptionHandler.java
+  - src/main/java/com/example/shortener/web/RequestIdFilter.java
+  - src/main/resources/static/index.html
+  - src/test/java/com/example/shortener/integration/ApiIntegrationTest.java
+  - src/test/java/com/example/shortener/integration/OpenApiExportTest.java
+  verify:
+  - src/test/java/com/example/shortener/integration/ApiIntegrationTest.java
+  - src/test/java/com/example/shortener/integration/OpenApiExportTest.java
+  ops:
+  - op: write
+    path: src/main/java/com/example/shortener/web/Dtos.java
+    src: files/src/main/java/com/example/shortener/web/Dtos.java
+  - op: write
+    path: src/main/java/com/example/shortener/web/ApiKeyAuth.java
+    src: files/src/main/java/com/example/shortener/web/ApiKeyAuth.java
+  - op: write
+    path: src/main/java/com/example/shortener/web/LinkController.java
+    src: files/src/main/java/com/example/shortener/web/LinkController.java
+  - op: write
+    path: src/main/java/com/example/shortener/web/RedirectController.java
+    src: files/src/main/java/com/example/shortener/web/RedirectController.java
+  - op: write
+    path: src/main/java/com/example/shortener/web/HealthController.java
+    src: files/src/main/java/com/example/shortener/web/HealthController.java
+  - op: write
+    path: src/main/java/com/example/shortener/web/ApiExceptionHandler.java
+    src: files/src/main/java/com/example/shortener/web/ApiExceptionHandler.java
+  - op: write
+    path: src/main/java/com/example/shortener/web/RequestIdFilter.java
+    src: files/src/main/java/com/example/shortener/web/RequestIdFilter.java
+  - op: write
+    path: src/main/resources/static/index.html
+    src: files/src/main/resources/static/index.html
+  - op: write
+    path: src/test/java/com/example/shortener/integration/ApiIntegrationTest.java
+    src: files/src/test/java/com/example/shortener/integration/ApiIntegrationTest.java
+  - op: write
+    path: src/test/java/com/example/shortener/integration/OpenApiExportTest.java
+    src: files/src/test/java/com/example/shortener/integration/OpenApiExportTest.java

@@ -1,0 +1,330 @@
+# Change catalogue for "make links safer, faster, with marketing analytics" (ambiguous scenario).
+# Which tasks run depends on the answers to the clarifying questions. Edits to shared files
+# (ShortenerProperties, LinkService) anchor on lines no other task changes, so any subset of
+# these tasks applies cleanly in plan order.
+name: shortener-v2
+package: com.example.shortener
+coverage_min: 90
+docs:
+  app: shortener
+serve_props: {spring.datasource.url: "jdbc:h2:file:{run_dir}/service/shortener", shortener.api-keys: dev-key}
+smoke_props: {shortener.api-keys: smoke-key}
+smoke:
+  - {method: GET, path: /readyz, expect: 200}
+  - {method: POST, path: /api/v1/links, json: {url: "https://example.com/smoke"}, headers: {X-API-Key: smoke-key}, expect: 201, save: code}
+  - {method: GET, path: "/{code}", expect: 302}
+  - {method: GET, path: "/api/v1/links/{code}/stats", headers: {X-API-Key: smoke-key}, expect: 200}
+tasks:
+  - id: perf.redirect_cache
+    title: "Q-PERF: bounded TTL read-through cache on the redirect path (p95 < 50 ms)"
+    capabilities: [redirect_cache]
+    writes: [src/main/java/com/example/shortener/service/TtlCache.java,
+             src/main/java/com/example/shortener/config/ShortenerProperties.java,
+             src/main/java/com/example/shortener/service/LinkService.java,
+             src/test/java/com/example/shortener/unit/TtlCacheTest.java,
+             src/test/java/com/example/shortener/integration/RedirectPerformanceTest.java]
+    verify: [src/test/java/com/example/shortener/unit/TtlCacheTest.java,
+             src/test/java/com/example/shortener/integration/RedirectPerformanceTest.java]
+    ops:
+      - {op: write, path: src/main/java/com/example/shortener/service/TtlCache.java, src: files/src/main/java/com/example/shortener/service/TtlCache.java}
+      - {op: write, path: src/test/java/com/example/shortener/unit/TtlCacheTest.java, src: files/src/test/java/com/example/shortener/unit/TtlCacheTest.java}
+      - {op: write, path: src/test/java/com/example/shortener/integration/RedirectPerformanceTest.java, src: files/src/test/java/com/example/shortener/integration/RedirectPerformanceTest.java}
+      - op: edit
+        path: src/main/java/com/example/shortener/config/ShortenerProperties.java
+        old: |2
+                  @DefaultValue("false") boolean allowPrivateTargets,
+        new: |2
+                  @DefaultValue("false") boolean allowPrivateTargets,
+                  @DefaultValue("10000") int redirectCacheSize,
+                  @DefaultValue("30") int redirectCacheTtlSeconds,
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+              private final Clock clock;
+        new: |2
+              private final Clock clock;
+              private final TtlCache<Link> cache;
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+                  this.clock = clock;
+        new: |2
+                  this.clock = clock;
+                  // Bounded staleness across instances: entries live at most redirectCacheTtlSeconds.
+                  this.cache = new TtlCache<>(props.redirectCacheSize(),
+                          Duration.ofSeconds(props.redirectCacheTtlSeconds()), clock);
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+              public Link resolve(String code) {
+                  Link link = repo.find(code).orElseThrow(() -> new Errors.NotFound(code));
+        new: |2
+              public Link resolve(String code) {
+                  Link link = cache.get(code).orElse(null);
+                  if (link == null) {
+                      // Misses are not cached, so a newly created alias works at once.
+                      link = repo.find(code).orElseThrow(() -> new Errors.NotFound(code));
+                      cache.put(code, link);
+                  }
+                  // Expiry and deletion are still checked on every hit, cached or not.
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+                  repo.softDelete(code, clock.instant());
+        new: |2
+                  repo.softDelete(code, clock.instant());
+                  cache.invalidate(code);
+
+  - id: safety.domain_denylist
+    title: "Q-SAFETY: configurable domain denylist (incl. subdomains)"
+    capabilities: [domain_denylist]
+    writes: [src/main/java/com/example/shortener/config/ShortenerProperties.java,
+             src/main/java/com/example/shortener/service/UrlValidator.java,
+             src/main/java/com/example/shortener/service/LinkService.java,
+             src/test/java/com/example/shortener/support/IntegrationTest.java,
+             src/test/java/com/example/shortener/unit/DenylistTest.java,
+             src/test/java/com/example/shortener/integration/DenylistApiTest.java]
+    verify: [src/test/java/com/example/shortener/unit/DenylistTest.java,
+             src/test/java/com/example/shortener/integration/DenylistApiTest.java,
+             src/test/java/com/example/shortener/unit/UrlValidatorTest.java]
+    ops:
+      - {op: write, path: src/test/java/com/example/shortener/unit/DenylistTest.java, src: files/src/test/java/com/example/shortener/unit/DenylistTest.java}
+      - {op: write, path: src/test/java/com/example/shortener/integration/DenylistApiTest.java, src: files/src/test/java/com/example/shortener/integration/DenylistApiTest.java}
+      - op: edit
+        path: src/main/java/com/example/shortener/config/ShortenerProperties.java
+        old: |2
+                  @DefaultValue("false") boolean allowPrivateTargets,
+        new: |2
+                  @DefaultValue("false") boolean allowPrivateTargets,
+                  @DefaultValue List<String> blockedDomains,
+      - op: edit
+        path: src/main/java/com/example/shortener/service/UrlValidator.java
+        old: |2
+          import java.util.Locale;
+        new: |2
+          import java.util.List;
+          import java.util.Locale;
+      - op: edit
+        path: src/main/java/com/example/shortener/service/UrlValidator.java
+        old: |2
+              public static String validate(String url, int maxLength, String baseUrl, boolean allowPrivate) {
+        new: |2
+              public static String validate(String url, int maxLength, String baseUrl, boolean allowPrivate) {
+                  return validate(url, maxLength, baseUrl, allowPrivate, List.of());
+              }
+
+              public static String validate(String url, int maxLength, String baseUrl, boolean allowPrivate,
+                      List<String> blockedDomains) {
+      - op: edit
+        path: src/main/java/com/example/shortener/service/UrlValidator.java
+        old: |2
+                  String own = URI.create(baseUrl).getHost();
+        new: |2
+                  for (String domain : blockedDomains) {
+                      String blocked = domain.strip().toLowerCase(Locale.ROOT);
+                      if (!blocked.isEmpty() && (host.equals(blocked) || host.endsWith("." + blocked))) {
+                          throw new Errors.InvalidUrl("target domain is blocked");
+                      }
+                  }
+                  String own = URI.create(baseUrl).getHost();
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+                          props.allowPrivateTargets());
+        new: |2
+                          props.allowPrivateTargets(), props.blockedDomains());
+      - op: edit
+        path: src/test/java/com/example/shortener/support/IntegrationTest.java
+        old: |2
+              "shortener.async-clicks=false"
+          })
+        new: |2
+              "shortener.async-clicks=false",
+              "shortener.blocked-domains=evil.example,phish.test"
+          })
+
+  - id: analytics.unique_visitors
+    title: "Q-PRIVACY=hashed: unique visitors via daily-rotating HMAC; raw IPs never stored"
+    capabilities: [unique_visitors]
+    writes: [src/main/resources/db/migration/V2__visitor_hash.sql,
+             src/main/java/com/example/shortener/config/ShortenerProperties.java,
+             src/main/java/com/example/shortener/domain/Click.java,
+             src/main/java/com/example/shortener/domain/LinkStats.java,
+             src/main/java/com/example/shortener/service/LinkRepository.java,
+             src/main/java/com/example/shortener/service/LinkService.java,
+             src/main/java/com/example/shortener/web/Dtos.java,
+             src/main/java/com/example/shortener/web/LinkController.java,
+             src/main/java/com/example/shortener/web/RedirectController.java,
+             src/test/java/com/example/shortener/integration/VisitorAnalyticsTest.java]
+    verify: [src/test/java/com/example/shortener/integration/VisitorAnalyticsTest.java,
+             src/test/java/com/example/shortener/integration/ApiIntegrationTest.java]
+    ops:
+      - {op: write, path: src/main/resources/db/migration/V2__visitor_hash.sql, src: files/src/main/resources/db/migration/V2__visitor_hash.sql}
+      - {op: write, path: src/test/java/com/example/shortener/integration/VisitorAnalyticsTest.java, src: files/src/test/java/com/example/shortener/integration/VisitorAnalyticsTest.java}
+      - op: edit
+        path: src/main/java/com/example/shortener/config/ShortenerProperties.java
+        old: |2
+                  @DefaultValue("false") boolean allowPrivateTargets,
+        new: |2
+                  @DefaultValue("false") boolean allowPrivateTargets,
+                  // Key for visitor hashes. Unset: a random per-process key (unique counts reset on restart).
+                  @DefaultValue("") String analyticsKey,
+      - op: edit
+        path: src/main/java/com/example/shortener/domain/Click.java
+        old: |2
+          public record Click(Instant clickedAt, String referrerHost, String userAgentFamily) {
+        new: |2
+          public record Click(Instant clickedAt, String referrerHost, String userAgentFamily, String visitorHash) {
+      - op: edit
+        path: src/main/java/com/example/shortener/domain/LinkStats.java
+        old: |2
+          public record LinkStats(String code, long totalClicks, List<DayCount> daily, List<HostCount> topReferrers) {
+        new: |2
+          public record LinkStats(String code, long totalClicks, List<DayCount> daily, List<HostCount> topReferrers,
+                  long uniqueVisitors) {
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkRepository.java
+        old: |2
+                  jdbc.sql("INSERT INTO clicks (code, clicked_at, clicked_day, referrer_host, user_agent_family)"
+                                  + " VALUES (?, ?, ?, ?, ?)")
+                          .params(code, ts(click.clickedAt()), click.clickedAt().toString().substring(0, 10),
+                                  click.referrerHost(), click.userAgentFamily())
+        new: |2
+                  jdbc.sql("INSERT INTO clicks (code, clicked_at, clicked_day, referrer_host, user_agent_family,"
+                                  + " visitor_hash) VALUES (?, ?, ?, ?, ?, ?)")
+                          .params(code, ts(click.clickedAt()), click.clickedAt().toString().substring(0, 10),
+                                  click.referrerHost(), click.userAgentFamily(), click.visitorHash())
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkRepository.java
+        old: |2
+              public List<HostCount> topReferrers(String code, int limit) {
+        new: |2
+              /** Distinct daily visitor hashes: a returning visitor counts once per day in the window. */
+              public long uniqueVisitors(String code, Instant since) {
+                  return jdbc.sql("SELECT COUNT(DISTINCT visitor_hash) FROM clicks WHERE code = ? AND clicked_at >= ?"
+                                  + " AND visitor_hash IS NOT NULL")
+                          .params(code, ts(since)).query(Long.class).single();
+              }
+
+              public List<HostCount> topReferrers(String code, int limit) {
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+          import java.util.Optional;
+        new: |2
+          import java.util.Optional;
+          import javax.crypto.Mac;
+          import javax.crypto.spec.SecretKeySpec;
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+          import java.security.NoSuchAlgorithmException;
+        new: |2
+          import java.security.InvalidKeyException;
+          import java.security.NoSuchAlgorithmException;
+          import java.security.SecureRandom;
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+              private final Clock clock;
+        new: |2
+              private final Clock clock;
+              private final byte[] visitorKey;
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+                  this.clock = clock;
+        new: |2
+                  this.clock = clock;
+                  this.visitorKey = props.analyticsKey().isEmpty() ? randomKey()
+                          : props.analyticsKey().getBytes(StandardCharsets.UTF_8);
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+              public void recordClick(String code, String referrer, String userAgent) {
+                  String host = null;
+        new: |2
+              public void recordClick(String code, String referrer, String userAgent) {
+                  recordClick(code, referrer, userAgent, null);
+              }
+
+              public void recordClick(String code, String referrer, String userAgent, String clientIp) {
+                  String host = null;
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+                  repo.recordClick(code, new Click(clock.instant(), host, userAgentFamily(userAgent)));
+        new: |2
+                  repo.recordClick(code, new Click(clock.instant(), host, userAgentFamily(userAgent),
+                          visitorHash(clientIp, userAgent)));
+              }
+
+              /** Keyed hash of (day, IP, user agent). The raw IP never leaves this method. */
+              public String visitorHash(String clientIp, String userAgent) {
+                  if (clientIp == null || clientIp.isEmpty()) {
+                      return null;
+                  }
+                  String message = clock.instant().toString().substring(0, 10) + "|" + clientIp + "|"
+                          + (userAgent == null ? "" : userAgent);
+                  try {
+                      Mac mac = Mac.getInstance("HmacSHA256");
+                      mac.init(new SecretKeySpec(visitorKey, "HmacSHA256"));
+                      return HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8)))
+                              .substring(0, 16);
+                  } catch (NoSuchAlgorithmException | InvalidKeyException e) {
+                      throw new IllegalStateException(e);
+                  }
+              }
+
+              private static byte[] randomKey() {
+                  byte[] key = new byte[32];
+                  new SecureRandom().nextBytes(key);
+                  return key;
+      - op: edit
+        path: src/main/java/com/example/shortener/service/LinkService.java
+        old: |2
+                  return new LinkStats(link.code(), link.clickCount(), repo.dailyClicks(code, since),
+                          repo.topReferrers(code, 5));
+        new: |2
+                  return new LinkStats(link.code(), link.clickCount(), repo.dailyClicks(code, since),
+                          repo.topReferrers(code, 5), repo.uniqueVisitors(code, since));
+      - op: edit
+        path: src/main/java/com/example/shortener/web/Dtos.java
+        old: |2
+                      @JsonProperty("top_referrers") List<ReferrerCount> topReferrers) {
+        new: |2
+                      @JsonProperty("top_referrers") List<ReferrerCount> topReferrers,
+                      @JsonProperty("unique_visitors") long uniqueVisitors) {
+      - op: edit
+        path: src/main/java/com/example/shortener/web/LinkController.java
+        old: |2
+                          stats.topReferrers().stream().map(h -> new ReferrerCount(h.host(), h.clicks())).toList());
+        new: |2
+                          stats.topReferrers().stream().map(h -> new ReferrerCount(h.host(), h.clicks())).toList(),
+                          stats.uniqueVisitors());
+      - op: edit
+        path: src/main/java/com/example/shortener/web/RedirectController.java
+        old: |2
+          import com.example.shortener.service.LinkService;
+        new: |2
+          import com.example.shortener.service.LinkService;
+          import jakarta.servlet.http.HttpServletRequest;
+      - op: edit
+        path: src/main/java/com/example/shortener/web/RedirectController.java
+        old: |2
+                      @RequestHeader(value = HttpHeaders.USER_AGENT, required = false) String userAgent) {
+                  Link link = service.resolve(code);
+                  clickExecutor.execute(() -> service.recordClick(link.code(), referer, userAgent));
+        new: |2
+                      @RequestHeader(value = HttpHeaders.USER_AGENT, required = false) String userAgent,
+                      HttpServletRequest request) {
+                  Link link = service.resolve(code);
+                  String clientIp = request.getRemoteAddr(); // only ever hashed by the service, never stored
+                  clickExecutor.execute(() -> service.recordClick(link.code(), referer, userAgent, clientIp));
+
+  - id: analytics.unique_visitors_raw
+    title: "Q-PRIVACY=raw: store client IPs for unique visitors"
+    capabilities: [unique_visitors_raw]
+    writes: [src/main/resources/db/migration/V2__client_ip.sql]
+    ops:
+      - {op: write, path: src/main/resources/db/migration/V2__client_ip.sql, src: files/src/main/resources/db/migration/V2__client_ip.sql}

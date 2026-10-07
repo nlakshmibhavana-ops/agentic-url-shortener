@@ -1,0 +1,171 @@
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -1,0 +1,9 @@
++# Changelog
++
++## [Unreleased] - linkly v0.4 -> v0.5: security fix, click accuracy fix, link expiry
++
++- Black-box regression tests for LINK-142/150/151, written before any fix (test-first)
++- LINK-142: reject script/data/credential URLs at the API boundary (new validator)
++- LINK-151: atomic click increment; 302 + no-store so browsers stop caching redirects
++- LINK-150: optional expires_in_days; 410 Gone after expiry; additive schema migration
++
+--- /dev/null
++++ b/docs/API.md
+@@ -1,0 +1,10 @@
++# OpenAPI definition API
++
++Generated from the running application's OpenAPI contract (`openapi.json`).
++
++| Method | Path | Operation | Responses |
++|---|---|---|---|
++| GET | `/info/{code}` | info | 200 |
++| GET | `/r/{code}` | go | 200 |
++| POST | `/shorten` | shorten | 200 |
++
+--- /dev/null
++++ b/docs/DESIGN.md
+@@ -1,0 +1,31 @@
++# Design record
++
++Architecture: layered Spring Boot service: web -> service -> repository (JDBC) -> Flyway-managed schema
++
++## Capabilities
++
++- **click_accuracy**: Concurrent clicks are all counted (atomic increment); Redirects are not permanently cacheable, so repeat clicks reach the service
++- **expiry**: Links may carry an optional expiry in the future; Expired links return 410 Gone
++- **url_safety**: Only http(s) targets are accepted; script/data/file schemes are rejected with 400; URLs with embedded credentials are rejected
++
++## Decisions (ADRs)
++
++### ADR-01: Atomic UPDATE ... SET clicks = clicks + 1, and 302 redirects
++
++Fixes lost updates under concurrency and browser-cached 301s that never re-hit the service.
++
++Alternatives considered: SELECT ... FOR UPDATE row locking (more contention)
++
++### ADR-02: Expiry evaluated at read time; 410 Gone
++
++No background job required; expired rows remain for audit and analytics.
++
++Alternatives considered: Background purge job
++
++### ADR-03: Validate targets at the boundary; never fetch them
++
++Blocks script schemes, credential spoofing and internal hosts without network I/O.
++
++Alternatives considered: Fetch-and-inspect targets (SSRF risk, latency)
++
++
+--- /dev/null
++++ b/openapi.json
+@@ -1,0 +1,109 @@
++{
++  "openapi" : "3.1.0",
++  "info" : {
++    "title" : "OpenAPI definition",
++    "version" : "v0"
++  },
++  "servers" : [ {
++    "url" : "http://127.0.0.1:42605",
++    "description" : "Generated server url"
++  } ],
++  "paths" : {
++    "/shorten" : {
++      "post" : {
++        "tags" : [ "link-controller" ],
++        "operationId" : "shorten",
++        "requestBody" : {
++          "content" : {
++            "application/json" : {
++              "schema" : {
++                "$ref" : "#/components/schemas/ShortenRequest"
++              }
++            }
++          },
++          "required" : true
++        },
++        "responses" : {
++          "200" : {
++            "description" : "OK",
++            "content" : {
++              "*/*" : {
++                "schema" : {
++                  "type" : "object",
++                  "additionalProperties" : {
++                    "type" : "string"
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/r/{code}" : {
++      "get" : {
++        "tags" : [ "link-controller" ],
++        "operationId" : "go",
++        "parameters" : [ {
++          "name" : "code",
++          "in" : "path",
++          "required" : true,
++          "schema" : {
++            "type" : "string"
++          }
++        } ],
++        "responses" : {
++          "200" : {
++            "description" : "OK"
++          }
++        }
++      }
++    },
++    "/info/{code}" : {
++      "get" : {
++        "tags" : [ "link-controller" ],
++        "operationId" : "info",
++        "parameters" : [ {
++          "name" : "code",
++          "in" : "path",
++          "required" : true,
++          "schema" : {
++            "type" : "string"
++          }
++        } ],
++        "responses" : {
++          "200" : {
++            "description" : "OK",
++            "content" : {
++              "*/*" : {
++                "schema" : {
++                  "type" : "object",
++                  "additionalProperties" : { }
++                }
++              }
++            }
++          }
++        }
++      }
++    }
++  },
++  "components" : {
++    "schemas" : {
++      "ShortenRequest" : {
++        "type" : "object",
++        "properties" : {
++          "url" : {
++            "type" : "string"
++          },
++          "expires_in_days" : {
++            "type" : "integer",
++            "format" : "int32",
++            "maximum" : 3650,
++            "minimum" : 1
++          }
++        }
++      }
++    }
++  }
++}
++

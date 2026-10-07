@@ -1,0 +1,7 @@
+target/
+runs/
+data/
+*.class
+.idea/
+*.iml
+.vscode/

@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Warm the Maven repository for the generated projects
+        run: ./scripts/prefetch.sh
+      - name: Unit tests
+        run: mvn -B test -DexcludedGroups=scenario
+      - name: End-to-end scenario tests (real Maven builds of the generated services)
+        run: mvn -B test -Dgroups=scenario
+      - name: Run all three scenarios through the CLI
+        run: ./scripts/demo.sh
+      - name: Upload run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentflow-runs
+          path: runs/
+          retention-days: 14

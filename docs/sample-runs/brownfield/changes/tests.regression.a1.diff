@@ -1,0 +1,196 @@
+--- /dev/null
++++ b/src/test/java/com/example/linkly/ClickAccuracyTest.java
+@@ -1,0 +1,44 @@
++package com.example.linkly;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import java.net.http.HttpResponse;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.TimeUnit;
++import org.junit.jupiter.api.Test;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.test.web.server.LocalServerPort;
++
++/** LINK-151: click counts were under-reported (lost updates and cached 301 redirects). */
++@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
++        properties = "spring.datasource.url=jdbc:h2:mem:linkly-clicks;DB_CLOSE_DELAY=-1")
++class ClickAccuracyTest {
++
++    @LocalServerPort
++    int port;
++
++    @Test
++    void concurrentClicksAreNotLost() throws InterruptedException {
++        Http http = new Http(port);
++        String code = Http.field(http.post("/shorten", "{\"url\":\"https://example.com\"}").body(), "code");
++        try (ExecutorService pool = Executors.newFixedThreadPool(8)) {
++            for (int i = 0; i < 200; i++) {
++                pool.execute(() -> http.get("/r/" + code));
++            }
++            pool.shutdown();
++            assertThat(pool.awaitTermination(60, TimeUnit.SECONDS)).isTrue();
++        }
++        assertThat(Http.field(http.get("/info/" + code).body(), "clicks")).isEqualTo("200");
++    }
++
++    @Test
++    void redirectIsNotPermanentlyCacheable() {
++        Http http = new Http(port);
++        String code = Http.field(http.post("/shorten", "{\"url\":\"https://example.com\"}").body(), "code");
++        HttpResponse<String> resp = http.get("/r/" + code);
++        assertThat(resp.statusCode()).isEqualTo(302);
++        assertThat(resp.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
++    }
++}
++
+--- /dev/null
++++ b/src/test/java/com/example/linkly/ExpiryTest.java
+@@ -1,0 +1,60 @@
++package com.example.linkly;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import java.time.Duration;
++import java.time.Instant;
++import java.time.OffsetDateTime;
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.test.web.server.LocalServerPort;
++import org.springframework.jdbc.core.JdbcTemplate;
++
++/** LINK-150: optional link expiry; expired links answer 410 Gone. */
++@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
++        properties = "spring.datasource.url=jdbc:h2:mem:linkly-expiry;DB_CLOSE_DELAY=-1")
++class ExpiryTest {
++
++    @LocalServerPort
++    int port;
++
++    @Autowired
++    JdbcTemplate jdbc;
++
++    @Test
++    void linkWithoutExpiryStillWorks() {
++        Http http = new Http(port);
++        String code = Http.field(http.post("/shorten", "{\"url\":\"https://example.com\"}").body(), "code");
++        assertThat(http.get("/r/" + code).statusCode()).isEqualTo(302);
++        assertThat(http.get("/info/" + code).body()).contains("\"expires_at\":null");
++    }
++
++    @Test
++    void expiringLinkReportsItsExpiry() {
++        Http http = new Http(port);
++        String body = http.post("/shorten", "{\"url\":\"https://example.com\",\"expires_in_days\":7}").body();
++        String expires = Http.field(http.get("/info/" + Http.field(body, "code")).body(), "expires_at");
++        Duration left = Duration.between(Instant.now(), Instant.parse(expires));
++        assertThat(left).isBetween(Duration.ofDays(7).minusHours(1), Duration.ofDays(7));
++    }
++
++    @Test
++    void expiredLinkIsGone() {
++        Http http = new Http(port);
++        String body = http.post("/shorten", "{\"url\":\"https://example.com\",\"expires_in_days\":1}").body();
++        String code = Http.field(body, "code");
++        jdbc.update("UPDATE urls SET expires_at = ? WHERE code = ?", OffsetDateTime.now().minusMinutes(1), code);
++        assertThat(http.get("/r/" + code).statusCode()).isEqualTo(410);
++    }
++
++    @Test
++    void expiryMustBePositiveAndBounded() {
++        Http http = new Http(port);
++        for (int days : new int[] {0, -1, 3651}) {
++            String json = "{\"url\":\"https://example.com\",\"expires_in_days\":" + days + "}";
++            assertThat(http.post("/shorten", json).statusCode()).as("days=%d", days).isEqualTo(400);
++        }
++    }
++}
++
+--- /dev/null
++++ b/src/test/java/com/example/linkly/MigrationTest.java
+@@ -1,0 +1,43 @@
++package com.example.linkly;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import java.nio.file.Path;
++import java.sql.Connection;
++import java.sql.DriverManager;
++import java.sql.ResultSet;
++import java.sql.SQLException;
++import java.sql.Statement;
++import org.flywaydb.core.Flyway;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++/** Production databases created by v0.4.x must upgrade in place, without data loss. */
++class MigrationTest {
++
++    @Test
++    void upgradesAnExistingDatabaseWithLiveRows(@TempDir Path dir) throws SQLException {
++        String url = "jdbc:h2:file:" + dir.resolve("prod-v04");
++        // The database as v0.4 left it: schema version 1, with real rows in it.
++        flyway(url).target("1").load().migrate();
++        try (Connection c = DriverManager.getConnection(url, "sa", ""); Statement s = c.createStatement()) {
++            s.execute("INSERT INTO urls (code, url, clicks) VALUES ('1', 'https://old.example', 41)");
++        }
++
++        flyway(url).load().migrate();
++        flyway(url).load().migrate(); // idempotent
++
++        try (Connection c = DriverManager.getConnection(url, "sa", ""); Statement s = c.createStatement();
++                ResultSet rs = s.executeQuery("SELECT url, clicks, expires_at FROM urls WHERE code = '1'")) {
++            assertThat(rs.next()).isTrue();
++            assertThat(rs.getString("url")).isEqualTo("https://old.example");
++            assertThat(rs.getInt("clicks")).isEqualTo(41);
++            assertThat(rs.getObject("expires_at")).isNull();
++        }
++    }
++
++    private static org.flywaydb.core.api.configuration.FluentConfiguration flyway(String url) {
++        return Flyway.configure().dataSource(url, "sa", "").locations("classpath:db/migration");
++    }
++}
++
+--- /dev/null
++++ b/src/test/java/com/example/linkly/UrlSafetyTest.java
+@@ -1,0 +1,37 @@
++package com.example.linkly;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import java.net.http.HttpResponse;
++import java.util.List;
++import org.junit.jupiter.api.Test;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.test.web.server.LocalServerPort;
++
++/** LINK-142: unsafe target URLs must be rejected with 400 and never stored. */
++@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
++        properties = "spring.datasource.url=jdbc:h2:mem:linkly-safety;DB_CLOSE_DELAY=-1")
++class UrlSafetyTest {
++
++    private static final List<String> UNSAFE = List.of(
++            "javascript:alert(1)", "JAVASCRIPT:alert(1)", "data:text/html;base64,PHNjcmlwdD4=",
++            "vbscript:msgbox(1)", "file:///etc/passwd", "//evil.example/path", "https://",
++            "https://user:pw@bank.example/", "https://example.com/a b", "");
++
++    @LocalServerPort
++    int port;
++
++    @Test
++    void unsafeUrlsAreRejectedAndNothingIsStored() {
++        Http http = new Http(port);
++        for (String url : UNSAFE) {
++            HttpResponse<String> resp = http.post("/shorten", "{\"url\":\"" + url + "\"}");
++            assertThat(resp.statusCode()).as(url).isEqualTo(400);
++        }
++        // Codes are sequential in this legacy service: no rejected URL may have been inserted.
++        String code = Http.field(http.post("/shorten", "{\"url\":\"https://Example.com/Path?q=1\"}").body(), "code");
++        assertThat(code).isEqualTo("1");
++        assertThat(http.get("/r/" + code).headers().firstValue("Location")).hasValue("https://Example.com/Path?q=1");
++    }
++}
++

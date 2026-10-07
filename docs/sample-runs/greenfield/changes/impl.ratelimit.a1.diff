@@ -1,0 +1,131 @@
+--- /dev/null
++++ b/src/main/java/com/example/shortener/config/AppConfig.java
+@@ -1,0 +1,33 @@
++package com.example.shortener.config;
++
++import com.example.shortener.service.TokenBucketRateLimiter;
++import java.time.Clock;
++import java.time.Instant;
++import java.util.concurrent.Executor;
++import java.util.concurrent.Executors;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++
++@Configuration
++public class AppConfig {
++
++    @Bean
++    Clock clock() {
++        return Clock.systemUTC();
++    }
++
++    @Bean
++    TokenBucketRateLimiter rateLimiter(ShortenerProperties props, Clock clock) {
++        return new TokenBucketRateLimiter(props.rateLimitPerMinute(), props.rateLimitPerMinute(), () -> {
++            Instant now = clock.instant();
++            return now.getEpochSecond() * 1_000_000_000L + now.getNano();
++        }, 10_000);
++    }
++
++    /** Clicks are recorded off the request thread so analytics never slows a redirect. */
++    @Bean
++    Executor clickExecutor(ShortenerProperties props) {
++        return props.asyncClicks() ? Executors.newVirtualThreadPerTaskExecutor() : Runnable::run;
++    }
++}
++
+--- /dev/null
++++ b/src/main/java/com/example/shortener/service/TokenBucketRateLimiter.java
+@@ -1,0 +1,46 @@
++package com.example.shortener.service;
++
++import java.util.Iterator;
++import java.util.LinkedHashMap;
++import java.util.Map;
++import java.util.function.LongSupplier;
++
++/** In-process token bucket per client key, with bounded memory (least recently used keys evicted). */
++public class TokenBucketRateLimiter {
++
++    private final double ratePerNano;
++    private final double capacity;
++    private final LongSupplier nanoClock;
++    private final int maxKeys;
++    private final Map<String, double[]> buckets = new LinkedHashMap<>(16, 0.75f, true);
++
++    public TokenBucketRateLimiter(int ratePerMinute, int burst, LongSupplier nanoClock, int maxKeys) {
++        this.ratePerNano = ratePerMinute / 60e9;
++        this.capacity = burst;
++        this.nanoClock = nanoClock;
++        this.maxKeys = maxKeys;
++    }
++
++    /** Takes one token. Returns 0 when allowed, else the seconds until a token is available. */
++    public synchronized double acquire(String key) {
++        long now = nanoClock.getAsLong();
++        double[] b = buckets.computeIfAbsent(key, k -> new double[] {capacity, now});
++        b[0] = Math.min(capacity, b[0] + (now - (long) b[1]) * ratePerNano);
++        b[1] = now;
++        while (buckets.size() > maxKeys) {
++            Iterator<String> eldest = buckets.keySet().iterator();
++            eldest.next();
++            eldest.remove();
++        }
++        if (b[0] >= 1) {
++            b[0] -= 1;
++            return 0;
++        }
++        return (1 - b[0]) / ratePerNano / 1e9;
++    }
++
++    synchronized int size() {
++        return buckets.size();
++    }
++}
++
+--- /dev/null
++++ b/src/test/java/com/example/shortener/unit/TokenBucketRateLimiterTest.java
+@@ -1,0 +1,43 @@
++package com.example.shortener.unit;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import com.example.shortener.service.TokenBucketRateLimiter;
++import java.util.concurrent.atomic.AtomicLong;
++import org.junit.jupiter.api.Test;
++
++class TokenBucketRateLimiterTest {
++
++    private final AtomicLong nanos = new AtomicLong();
++
++    @Test
++    void allowsBurstThenLimitsAndRefills() {
++        TokenBucketRateLimiter limiter = new TokenBucketRateLimiter(60, 3, nanos::get, 100);
++        assertThat(limiter.acquire("k")).isZero();
++        assertThat(limiter.acquire("k")).isZero();
++        assertThat(limiter.acquire("k")).isZero();
++        assertThat(limiter.acquire("k")).isBetween(0.01, 1.0);
++        nanos.addAndGet(1_000_000_000L);
++        assertThat(limiter.acquire("k")).isZero();
++    }
++
++    @Test
++    void keysAreIsolated() {
++        TokenBucketRateLimiter limiter = new TokenBucketRateLimiter(60, 1, nanos::get, 100);
++        assertThat(limiter.acquire("a")).isZero();
++        assertThat(limiter.acquire("a")).isPositive();
++        assertThat(limiter.acquire("b")).isZero();
++    }
++
++    @Test
++    void memoryIsBounded() {
++        TokenBucketRateLimiter limiter = new TokenBucketRateLimiter(60, 1, nanos::get, 10);
++        for (int i = 0; i < 100; i++) {
++            limiter.acquire("k" + i);
++        }
++        // the oldest keys were evicted, so k0 starts with a full bucket again
++        assertThat(limiter.acquire("k0")).isZero();
++        assertThat(limiter.acquire("k99")).isPositive();
++    }
++}
++

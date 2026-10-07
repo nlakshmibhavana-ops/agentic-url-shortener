@@ -1,0 +1,181 @@
+# Change catalogue for the legacy "linkly" service (brownfield scenario).
+# Edit ops are exact find/replace anchors. Tasks that edit the same file are serialised by the
+# planner, so a later task's anchors are written against the earlier task's result.
+name: linkly
+package: com.example.linkly
+coverage_min: 85
+docs:
+  app: linkly
+serve_props: {spring.datasource.url: "jdbc:h2:file:{run_dir}/service/linkly"}
+smoke:
+  - {method: POST, path: /shorten, json: {url: "https://example.com", expires_in_days: 30}, expect: 200, save: code}
+  - {method: GET, path: "/r/{code}", expect: 302}
+  - {method: POST, path: /shorten, json: {url: "javascript:alert(1)"}, expect: 400}
+  - {method: GET, path: "/info/{code}", expect: 200}
+tasks:
+  - id: tests.regression
+    title: Black-box regression tests for LINK-142/150/151, written before any fix (test-first)
+    capabilities: [url_safety, expiry, click_accuracy]
+    agent: test_author
+    writes: [src/test/java/com/example/linkly/UrlSafetyTest.java, src/test/java/com/example/linkly/ClickAccuracyTest.java,
+             src/test/java/com/example/linkly/ExpiryTest.java, src/test/java/com/example/linkly/MigrationTest.java]
+    ops:
+      - {op: write, path: src/test/java/com/example/linkly/UrlSafetyTest.java, src: files/src/test/java/com/example/linkly/UrlSafetyTest.java}
+      - {op: write, path: src/test/java/com/example/linkly/ClickAccuracyTest.java, src: files/src/test/java/com/example/linkly/ClickAccuracyTest.java}
+      - {op: write, path: src/test/java/com/example/linkly/ExpiryTest.java, src: files/src/test/java/com/example/linkly/ExpiryTest.java}
+      - {op: write, path: src/test/java/com/example/linkly/MigrationTest.java, src: files/src/test/java/com/example/linkly/MigrationTest.java}
+
+  - id: impl.url_validation
+    title: "LINK-142: reject script/data/credential URLs at the API boundary (new validator)"
+    capabilities: [url_safety]
+    deps: [tests.regression]
+    writes: [src/main/java/com/example/linkly/UrlValidator.java, src/main/java/com/example/linkly/LinkController.java]
+    verify: [src/test/java/com/example/linkly/UrlSafetyTest.java]
+    ops:
+      - {op: write, path: src/main/java/com/example/linkly/UrlValidator.java, src: files/src/main/java/com/example/linkly/UrlValidator.java}
+      - op: edit
+        path: src/main/java/com/example/linkly/LinkController.java
+        old: |2
+              public Map<String, String> shorten(@RequestBody ShortenRequest body) {
+                  String code = store.create(body.url());
+        new: |2
+              public Map<String, String> shorten(@RequestBody ShortenRequest body) {
+                  String url;
+                  try {
+                      url = UrlValidator.validate(body.url());
+                  } catch (UrlValidator.InvalidUrlException e) {
+                      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
+                  }
+                  String code = store.create(url);
+
+  - id: impl.click_accuracy
+    title: "LINK-151: atomic click increment; 302 + no-store so browsers stop caching redirects"
+    capabilities: [click_accuracy]
+    deps: [tests.regression]
+    writes: [src/main/java/com/example/linkly/LinkStore.java, src/main/java/com/example/linkly/LinkController.java]
+    verify: [src/test/java/com/example/linkly/ClickAccuracyTest.java]
+    ops:
+      - op: edit
+        path: src/main/java/com/example/linkly/LinkStore.java
+        old: |2
+              public void hit(String code) {
+                  Integer clicks = jdbc.queryForObject("SELECT clicks FROM urls WHERE code = ?", Integer.class, code);
+                  jdbc.update("UPDATE urls SET clicks = ? WHERE code = ?", clicks + 1, code);
+              }
+        new: |2
+              public void hit(String code) {
+                  // One atomic statement: the old read-then-write lost updates under concurrent clicks.
+                  jdbc.update("UPDATE urls SET clicks = clicks + 1 WHERE code = ?", code);
+              }
+      - op: edit
+        path: src/main/java/com/example/linkly/LinkController.java
+        old: |2
+                  return ResponseEntity.status(HttpStatus.MOVED_PERMANENTLY)
+                          .location(URI.create((String) row.get("URL")))
+                          .build();
+        new: |2
+                  // 302 + no-store: a cached 301 never reaches us again, so its clicks went uncounted.
+                  return ResponseEntity.status(HttpStatus.FOUND)
+                          .location(URI.create((String) row.get("URL")))
+                          .header("Cache-Control", "private, no-store")
+                          .build();
+
+  - id: impl.expiry
+    title: "LINK-150: optional expires_in_days; 410 Gone after expiry; additive schema migration"
+    capabilities: [expiry]
+    deps: [tests.regression, impl.url_validation, impl.click_accuracy]
+    writes: [src/main/resources/db/migration/V2__add_expires_at.sql, src/main/java/com/example/linkly/LinkStore.java,
+             src/main/java/com/example/linkly/LinkController.java]
+    verify: [src/test/java/com/example/linkly/ExpiryTest.java, src/test/java/com/example/linkly/MigrationTest.java]
+    # Candidates are tried in order. The first is a plausible first attempt that passes on an
+    # empty database but silently expires every existing link: only a test that upgrades a
+    # database with live rows catches it.
+    candidates:
+      - summary: Add expires_at and backfill existing links with a default 30-day expiry
+        ops:
+          - {op: write, path: src/main/resources/db/migration/V2__add_expires_at.sql, src: files/src/main/resources/db/migration/V2__add_expires_at_backfill.sql}
+          - &expiry_code_ops
+            - op: edit
+              path: src/main/java/com/example/linkly/LinkStore.java
+              old: |2
+                import java.sql.PreparedStatement;
+              new: |2
+                import java.sql.PreparedStatement;
+                import java.time.Instant;
+                import java.time.ZoneOffset;
+            - op: edit
+              path: src/main/java/com/example/linkly/LinkStore.java
+              old: |2
+                    public String create(String url) {
+                        GeneratedKeyHolder keys = new GeneratedKeyHolder();
+                        jdbc.update(con -> {
+                            PreparedStatement ps = con.prepareStatement("INSERT INTO urls (url) VALUES (?)", new String[] {"ID"});
+                            ps.setString(1, url);
+              new: |2
+                    public String create(String url, Instant expiresAt) {
+                        GeneratedKeyHolder keys = new GeneratedKeyHolder();
+                        jdbc.update(con -> {
+                            PreparedStatement ps = con.prepareStatement("INSERT INTO urls (url, expires_at) VALUES (?, ?)",
+                                    new String[] {"ID"});
+                            ps.setString(1, url);
+                            ps.setObject(2, expiresAt == null ? null : expiresAt.atOffset(ZoneOffset.UTC));
+            - op: edit
+              path: src/main/java/com/example/linkly/LinkController.java
+              old: |2
+                import java.net.URI;
+              new: |2
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import jakarta.validation.Valid;
+                import jakarta.validation.constraints.Max;
+                import jakarta.validation.constraints.Min;
+                import java.net.URI;
+                import java.time.Duration;
+                import java.time.Instant;
+                import java.time.OffsetDateTime;
+                import java.util.LinkedHashMap;
+            - op: edit
+              path: src/main/java/com/example/linkly/LinkController.java
+              old: |2
+                    public record ShortenRequest(String url) {
+              new: |2
+                    public record ShortenRequest(String url,
+                            @JsonProperty("expires_in_days") @Min(1) @Max(3650) Integer expiresInDays) {
+            - op: edit
+              path: src/main/java/com/example/linkly/LinkController.java
+              old: |2
+                    public Map<String, String> shorten(@RequestBody ShortenRequest body) {
+              new: |2
+                    public Map<String, String> shorten(@Valid @RequestBody ShortenRequest body) {
+            - op: edit
+              path: src/main/java/com/example/linkly/LinkController.java
+              old: |2
+                        String code = store.create(url);
+              new: |2
+                        Instant expiresAt = body.expiresInDays() == null
+                                ? null : Instant.now().plus(Duration.ofDays(body.expiresInDays()));
+                        String code = store.create(url, expiresAt);
+            - op: edit
+              path: src/main/java/com/example/linkly/LinkController.java
+              old: |2
+                        store.hit(code);
+              new: |2
+                        if (row.get("EXPIRES_AT") instanceof OffsetDateTime at && !at.toInstant().isAfter(Instant.now())) {
+                            throw new ResponseStatusException(HttpStatus.GONE, "link expired");
+                        }
+                        store.hit(code);
+            - op: edit
+              path: src/main/java/com/example/linkly/LinkController.java
+              old: |2
+                        return Map.of("code", code, "url", row.get("URL"), "clicks", row.get("CLICKS"));
+              new: |2
+                        Map<String, Object> info = new LinkedHashMap<>();
+                        info.put("code", code);
+                        info.put("url", row.get("URL"));
+                        info.put("clicks", row.get("CLICKS"));
+                        Object expires = row.get("EXPIRES_AT");
+                        info.put("expires_at", expires == null ? null : ((OffsetDateTime) expires).toInstant().toString());
+                        return info;
+      - summary: Add a nullable expires_at column (V2 migration), so existing rows stay valid
+        ops:
+          - {op: write, path: src/main/resources/db/migration/V2__add_expires_at.sql, src: files/src/main/resources/db/migration/V2__add_expires_at.sql}
+          - *expiry_code_ops

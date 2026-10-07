@@ -1,0 +1,34 @@
+{
+  "requests" : {
+    "impl.expiry@823c3370822eba74" : {
+      "node" : "impl.expiry",
+      "subject" : "823c3370822eba74",
+      "summary" : "LINK-150: optional expires_in_days; 410 Gone after expiry; additive schema migration\nchange: Add a nullable expires_at column (V2 migration), so existing rows stay valid (digest 823c3370822eba74)\nfiles: src/main/java/com/example/linkly/LinkController.java, src/main/java/com/example/linkly/LinkStore.java, src/main/resources/db/migration/V2__add_expires_at.sql\nValidation evidence:\n[x] build: compiled, checkstyle clean, [ExpiryTest, LinkApiTest, MigrationTest] passed",
+      "reasons" : [ "DATA-001 src/main/resources/db/migration/V2__add_expires_at.sql: schema change against an existing database" ],
+      "requested_at" : 1.791328315609E9
+    },
+    "release@679c169b84ecd35e" : {
+      "node" : "release",
+      "subject" : "679c169b84ecd35e",
+      "summary" : "Cut the release (version, notes) after human approval\nchange: Release 0.5.0 (digest 679c169b84ecd35e)\nfiles: RELEASE_NOTES.md, VERSION, pom.xml\n[x] all tests pass: 11 passed / 0 failed\n[x] line coverage >= 85.0%: 96.1%\n[x] checkstyle clean: 0 issues\n[x] no security findings: 0 findings\n[x] docs generated: openapi.json, docs/API.md, docs/DESIGN.md, CHANGELOG.md\n[x] no blocking questions open: []\nValidation evidence:\n[x] smoke: packaged JAR started; POST /shorten -> 200; GET /r/1 -> 302; POST /shorten -> 400; GET /info/1 -> 200",
+      "reasons" : [ "high-impact stage 'release'", "CHG-002 pom.xml: modifies a protected file" ],
+      "requested_at" : 1.791328377165E9
+    }
+  },
+  "decisions" : {
+    "impl.expiry@823c3370822eba74" : {
+      "status" : "approved",
+      "by" : "reviewer",
+      "comment" : "additive nullable column; v0.4 upgrade test passes",
+      "decided_at" : 1.791328316627E9,
+      "waited_s" : 1.0
+    },
+    "release@679c169b84ecd35e" : {
+      "status" : "approved",
+      "by" : "reviewer",
+      "comment" : "",
+      "decided_at" : 1.791328378464E9,
+      "waited_s" : 1.3
+    }
+  }
+}

@@ -1,0 +1,621 @@
+--- /dev/null
++++ b/src/main/java/com/example/shortener/web/ApiExceptionHandler.java
+@@ -1,0 +1,36 @@
++package com.example.shortener.web;
++
++import com.example.shortener.domain.Errors;
++import com.example.shortener.web.Dtos.ErrorResponse;
++import jakarta.servlet.http.HttpServletRequest;
++import org.springframework.http.HttpHeaders;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
++import org.springframework.http.converter.HttpMessageNotReadableException;
++import org.springframework.web.bind.MethodArgumentNotValidException;
++import org.springframework.web.bind.annotation.ExceptionHandler;
++import org.springframework.web.bind.annotation.RestControllerAdvice;
++
++/** Maps domain errors to stable JSON error bodies that carry the request id. */
++@RestControllerAdvice
++public class ApiExceptionHandler {
++
++    @ExceptionHandler(Errors.ApiException.class)
++    ResponseEntity<ErrorResponse> api(Errors.ApiException e, HttpServletRequest request) {
++        ResponseEntity.BodyBuilder response = ResponseEntity.status(e.status());
++        if (e instanceof Errors.RateLimited limited) {
++            response.header(HttpHeaders.RETRY_AFTER, Long.toString(limited.retryAfterSeconds()));
++        }
++        return response.body(new ErrorResponse(e.code(), e.getMessage(), RequestIdFilter.current(request)));
++    }
++
++    @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class})
++    ResponseEntity<ErrorResponse> invalid(Exception e, HttpServletRequest request) {
++        String detail = e instanceof MethodArgumentNotValidException m && m.getFieldError() != null
++                ? m.getFieldError().getField() + ": " + m.getFieldError().getDefaultMessage()
++                : "request body is not valid JSON for this endpoint";
++        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT)
++                .body(new ErrorResponse("invalid_request", detail, RequestIdFilter.current(request)));
++    }
++}
++
+--- /dev/null
++++ b/src/main/java/com/example/shortener/web/ApiKeyAuth.java
+@@ -1,0 +1,36 @@
++package com.example.shortener.web;
++
++import com.example.shortener.config.ShortenerProperties;
++import com.example.shortener.domain.Errors;
++import com.example.shortener.service.LinkService;
++import java.nio.charset.StandardCharsets;
++import java.security.MessageDigest;
++import org.springframework.stereotype.Component;
++
++/** Resolves the X-API-Key header to a stable owner id; raw keys never reach the database. */
++@Component
++public class ApiKeyAuth {
++
++    private final ShortenerProperties props;
++
++    public ApiKeyAuth(ShortenerProperties props) {
++        this.props = props;
++    }
++
++    public String owner(String apiKey) {
++        if (apiKey == null || apiKey.isEmpty()) {
++            throw new Errors.Unauthorized();
++        }
++        byte[] given = apiKey.getBytes(StandardCharsets.UTF_8);
++        boolean ok = false;
++        for (String key : props.apiKeys()) {
++            // Constant-time comparison for every configured key.
++            ok |= MessageDigest.isEqual(given, key.getBytes(StandardCharsets.UTF_8));
++        }
++        if (!ok) {
++            throw new Errors.Unauthorized();
++        }
++        return LinkService.ownerId(apiKey);
++    }
++}
++
+--- /dev/null
++++ b/src/main/java/com/example/shortener/web/Dtos.java
+@@ -1,0 +1,52 @@
++package com.example.shortener.web;
++
++import com.example.shortener.domain.Link;
++import com.fasterxml.jackson.annotation.JsonProperty;
++import jakarta.validation.constraints.NotBlank;
++import jakarta.validation.constraints.Size;
++import java.time.Instant;
++import java.util.List;
++
++/** HTTP request and response bodies (snake_case on the wire). */
++public final class Dtos {
++
++    private Dtos() {
++    }
++
++    public record CreateLinkRequest(
++            @NotBlank @Size(max = 2048) String url,
++            @Size(min = 3, max = 32) String alias,
++            @JsonProperty("expires_at") Instant expiresAt) {
++    }
++
++    public record LinkResponse(
++            String code,
++            @JsonProperty("short_url") String shortUrl,
++            @JsonProperty("target_url") String targetUrl,
++            @JsonProperty("created_at") Instant createdAt,
++            @JsonProperty("expires_at") Instant expiresAt,
++            @JsonProperty("click_count") long clickCount) {
++
++        static LinkResponse of(Link link, String baseUrl) {
++            return new LinkResponse(link.code(), baseUrl + "/" + link.code(), link.targetUrl(), link.createdAt(),
++                    link.expiresAt(), link.clickCount());
++        }
++    }
++
++    public record DailyClicks(String date, long clicks) {
++    }
++
++    public record ReferrerCount(String host, long clicks) {
++    }
++
++    public record StatsResponse(
++            String code,
++            @JsonProperty("total_clicks") long totalClicks,
++            List<DailyClicks> daily,
++            @JsonProperty("top_referrers") List<ReferrerCount> topReferrers) {
++    }
++
++    public record ErrorResponse(String error, String detail, @JsonProperty("request_id") String requestId) {
++    }
++}
++
+--- /dev/null
++++ b/src/main/java/com/example/shortener/web/HealthController.java
+@@ -1,0 +1,36 @@
++package com.example.shortener.web;
++
++import com.example.shortener.service.LinkRepository;
++import java.util.Map;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++@RestController
++public class HealthController {
++
++    private final LinkRepository repo;
++
++    public HealthController(LinkRepository repo) {
++        this.repo = repo;
++    }
++
++    /** Liveness: the process is up. */
++    @GetMapping("/healthz")
++    public Map<String, String> healthz() {
++        return Map.of("status", "ok");
++    }
++
++    /** Readiness: the database answers. */
++    @GetMapping("/readyz")
++    public ResponseEntity<Map<String, String>> readyz() {
++        boolean ok;
++        try {
++            ok = repo.ping();
++        } catch (RuntimeException e) {
++            ok = false;
++        }
++        return ResponseEntity.status(ok ? 200 : 503).body(Map.of("status", ok ? "ready" : "unavailable"));
++    }
++}
++
+--- /dev/null
++++ b/src/main/java/com/example/shortener/web/LinkController.java
+@@ -1,0 +1,81 @@
++package com.example.shortener.web;
++
++import com.example.shortener.config.ShortenerProperties;
++import com.example.shortener.domain.Errors;
++import com.example.shortener.domain.LinkStats;
++import com.example.shortener.service.LinkService;
++import com.example.shortener.service.TokenBucketRateLimiter;
++import com.example.shortener.web.Dtos.CreateLinkRequest;
++import com.example.shortener.web.Dtos.DailyClicks;
++import com.example.shortener.web.Dtos.LinkResponse;
++import com.example.shortener.web.Dtos.ReferrerCount;
++import com.example.shortener.web.Dtos.StatsResponse;
++import jakarta.validation.Valid;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.DeleteMapping;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestHeader;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RequestParam;
++import org.springframework.web.bind.annotation.RestController;
++
++@RestController
++@RequestMapping("/api/v1/links")
++public class LinkController {
++
++    private final LinkService service;
++    private final ApiKeyAuth auth;
++    private final TokenBucketRateLimiter limiter;
++    private final ShortenerProperties props;
++
++    public LinkController(LinkService service, ApiKeyAuth auth, TokenBucketRateLimiter limiter,
++            ShortenerProperties props) {
++        this.service = service;
++        this.auth = auth;
++        this.limiter = limiter;
++        this.props = props;
++    }
++
++    @PostMapping
++    public ResponseEntity<LinkResponse> create(
++            @RequestHeader(value = "X-API-Key", required = false) String apiKey,
++            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
++            @Valid @RequestBody CreateLinkRequest body) {
++        String owner = auth.owner(apiKey);
++        double wait = limiter.acquire(owner);
++        if (wait > 0) {
++            throw new Errors.RateLimited(Math.max(1, Math.round(wait)));
++        }
++        LinkService.Created result = service.create(body.url(), owner, body.alias(), body.expiresAt(),
++                idempotencyKey);
++        return ResponseEntity.status(result.created() ? HttpStatus.CREATED : HttpStatus.OK)
++                .body(LinkResponse.of(result.link(), props.baseUrl()));
++    }
++
++    @GetMapping("/{code}")
++    public LinkResponse get(@RequestHeader(value = "X-API-Key", required = false) String apiKey,
++            @PathVariable String code) {
++        return LinkResponse.of(service.getOwned(code, auth.owner(apiKey)), props.baseUrl());
++    }
++
++    @DeleteMapping("/{code}")
++    public ResponseEntity<Void> delete(@RequestHeader(value = "X-API-Key", required = false) String apiKey,
++            @PathVariable String code) {
++        service.delete(code, auth.owner(apiKey));
++        return ResponseEntity.noContent().build();
++    }
++
++    @GetMapping("/{code}/stats")
++    public StatsResponse stats(@RequestHeader(value = "X-API-Key", required = false) String apiKey,
++            @PathVariable String code, @RequestParam(defaultValue = "30") int days) {
++        LinkStats stats = service.stats(code, auth.owner(apiKey), Math.max(1, Math.min(days, 365)));
++        return new StatsResponse(stats.code(), stats.totalClicks(),
++                stats.daily().stream().map(d -> new DailyClicks(d.date(), d.clicks())).toList(),
++                stats.topReferrers().stream().map(h -> new ReferrerCount(h.host(), h.clicks())).toList());
++    }
++}
++
+--- /dev/null
++++ b/src/main/java/com/example/shortener/web/RedirectController.java
+@@ -1,0 +1,41 @@
++package com.example.shortener.web;
++
++import com.example.shortener.domain.Link;
++import com.example.shortener.service.LinkService;
++import java.net.URI;
++import java.util.concurrent.Executor;
++import org.springframework.http.HttpHeaders;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RequestHeader;
++import org.springframework.web.bind.annotation.RestController;
++
++@RestController
++public class RedirectController {
++
++    private final LinkService service;
++    private final Executor clickExecutor;
++
++    public RedirectController(LinkService service, Executor clickExecutor) {
++        this.service = service;
++        this.clickExecutor = clickExecutor;
++    }
++
++    /** Codes and aliases are [A-Za-z0-9_-] only, so static files such as index.html never match. */
++    @GetMapping("/{code:[A-Za-z0-9_-]+}")
++    public ResponseEntity<Void> follow(
++            @PathVariable String code,
++            @RequestHeader(value = HttpHeaders.REFERER, required = false) String referer,
++            @RequestHeader(value = HttpHeaders.USER_AGENT, required = false) String userAgent) {
++        Link link = service.resolve(code);
++        clickExecutor.execute(() -> service.recordClick(link.code(), referer, userAgent));
++        // 302 + no-store (not 301) so every click reaches the service and is counted.
++        return ResponseEntity.status(HttpStatus.FOUND)
++                .location(URI.create(link.targetUrl()))
++                .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
++                .build();
++    }
++}
++
+--- /dev/null
++++ b/src/main/java/com/example/shortener/web/RequestIdFilter.java
+@@ -1,0 +1,48 @@
++package com.example.shortener.web;
++
++import jakarta.servlet.FilterChain;
++import jakarta.servlet.ServletException;
++import jakarta.servlet.http.HttpServletRequest;
++import jakarta.servlet.http.HttpServletResponse;
++import java.io.IOException;
++import java.util.UUID;
++import java.util.regex.Pattern;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.stereotype.Component;
++import org.springframework.web.filter.OncePerRequestFilter;
++
++/** Propagates X-Request-ID and writes one structured access-log line per request. */
++@Component
++public class RequestIdFilter extends OncePerRequestFilter {
++
++    static final String HEADER = "X-Request-ID";
++    private static final String ATTRIBUTE = RequestIdFilter.class.getName();
++    private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9._-]{1,64}");
++    private static final Logger LOG = LoggerFactory.getLogger("access");
++
++    static String current(HttpServletRequest request) {
++        Object id = request.getAttribute(ATTRIBUTE);
++        return id == null ? null : id.toString();
++    }
++
++    @Override
++    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
++            throws ServletException, IOException {
++        String incoming = request.getHeader(HEADER);
++        // Only well-formed ids are echoed back, so the header cannot be used for log injection.
++        String id = incoming != null && SAFE_ID.matcher(incoming).matches()
++                ? incoming : UUID.randomUUID().toString().replace("-", "");
++        request.setAttribute(ATTRIBUTE, id);
++        response.setHeader(HEADER, id);
++        long started = System.nanoTime();
++        try {
++            chain.doFilter(request, response);
++        } finally {
++            LOG.info("{\"event\":\"http_request\",\"request_id\":\"{}\",\"method\":\"{}\",\"path\":\"{}\","
++                    + "\"status\":{},\"duration_ms\":{}}", id, request.getMethod(), request.getRequestURI(),
++                    response.getStatus(), (System.nanoTime() - started) / 1_000_000.0);
++        }
++    }
++}
++
+--- /dev/null
++++ b/src/main/resources/static/index.html
+@@ -1,0 +1,61 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>URL Shortener</title>
++<style>
++  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px;
++         color: #222; background: #fafafa; }
++  @media (prefers-color-scheme: dark) { body { color: #eee; background: #181818; } }
++  input { width: 100%; padding: 8px; margin: 4px 0 12px; box-sizing: border-box; }
++  button { padding: 8px 16px; margin-right: 8px; cursor: pointer; }
++  pre { background: rgba(127, 127, 127, .15); padding: 12px; overflow-x: auto; }
++  label { font-size: 14px; }
++  a { color: #3b82f6; }
++</style>
++</head>
++<body>
++<h1>URL Shortener</h1>
++<p>Create a short link, open it, then check its click stats. API docs: <a href="/v3/api-docs">/v3/api-docs</a></p>
++<label>API key <input id="key" value="dev-key"></label>
++<label>Long URL <input id="url" value="https://example.com/a/very/long/path"></label>
++<label>Custom alias (optional) <input id="alias" placeholder="e.g. spring-sale"></label>
++<button id="create">Shorten</button>
++<button id="stats">Stats for last link</button>
++<p id="link"></p>
++<pre id="out">Responses appear here.</pre>
++<script>
++  let lastCode = null;
++  const $ = (id) => document.getElementById(id);
++  async function call(method, path, body) {
++    const resp = await fetch(path, {
++      method,
++      headers: {"X-API-Key": $("key").value, "Content-Type": "application/json"},
++      body: body ? JSON.stringify(body) : undefined,
++    });
++    const data = await resp.json();
++    $("out").textContent = resp.status + "\n" + JSON.stringify(data, null, 2);
++    return {ok: resp.ok, data};
++  }
++  $("create").onclick = async () => {
++    const body = {url: $("url").value};
++    if ($("alias").value) body.alias = $("alias").value;
++    const {ok, data} = await call("POST", "/api/v1/links", body);
++    $("link").textContent = "";
++    if (ok) {
++      lastCode = data.code;
++      const a = document.createElement("a");
++      a.href = "/" + data.code;
++      a.target = "_blank";
++      a.textContent = data.short_url;
++      $("link").append("Short link: ", a, " (click it, then press Stats)");
++    }
++  };
++  $("stats").onclick = () => {
++    if (lastCode) call("GET", "/api/v1/links/" + encodeURIComponent(lastCode) + "/stats");
++  };
++</script>
++</body>
++</html>
++
+--- /dev/null
++++ b/src/test/java/com/example/shortener/integration/ApiIntegrationTest.java
+@@ -1,0 +1,170 @@
++package com.example.shortener.integration;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import com.example.shortener.support.Http;
++import com.example.shortener.support.IntegrationTest;
++import com.example.shortener.support.MutableClock;
++import java.net.http.HttpResponse;
++import java.time.Duration;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.web.server.LocalServerPort;
++
++@IntegrationTest
++class ApiIntegrationTest {
++
++    private static final String[] AUTH = {"X-API-Key", "test-key-1"};
++    private static final String[] OTHER = {"X-API-Key", "test-key-2"};
++    private static final Pattern CODE = Pattern.compile("\"code\":\"([^\"]+)\"");
++
++    @LocalServerPort
++    int port;
++
++    @Autowired
++    MutableClock clock;
++
++    Http http;
++
++    @BeforeEach
++    void setUp() {
++        http = new Http(port);
++        // The context (and its rate limiter) is shared across tests: start each with full buckets.
++        clock.advance(Duration.ofMinutes(1));
++    }
++
++    private HttpResponse<String> create(String json, String... headers) {
++        return http.post("/api/v1/links", json, headers.length == 0 ? AUTH : headers);
++    }
++
++    private static String code(HttpResponse<String> response) {
++        Matcher m = CODE.matcher(response.body());
++        assertThat(m.find()).as(response.body()).isTrue();
++        return m.group(1);
++    }
++
++    @Test
++    void createRedirectAndStatsFlow() {
++        HttpResponse<String> created = create("{\"url\":\"https://example.com/landing\"}");
++        assertThat(created.statusCode()).isEqualTo(201);
++        String code = code(created);
++        assertThat(created.body()).contains("\"short_url\":\"http://sho.rt/" + code + "\"");
++
++        HttpResponse<String> redirect = http.get("/" + code, "Referer", "https://news.example/item");
++        assertThat(redirect.statusCode()).isEqualTo(302);
++        assertThat(redirect.headers().firstValue("Location")).hasValue("https://example.com/landing");
++        assertThat(redirect.headers().firstValue("Cache-Control")).hasValue("private, no-store");
++        http.get("/" + code);
++
++        String stats = http.get("/api/v1/links/" + code + "/stats", AUTH).body();
++        assertThat(stats).contains("\"total_clicks\":2", "{\"date\":\"" + clock.instant().toString().substring(0, 10)
++                + "\",\"clicks\":2}", "{\"host\":\"news.example\",\"clicks\":1}", "{\"host\":\"direct\",\"clicks\":1}");
++    }
++
++    @Test
++    void customAliasAndConflict() {
++        String created = code(create("{\"url\":\"https://example.com\",\"alias\":\"spring-sale\"}"));
++        assertThat(created).isEqualTo("spring-sale");
++        HttpResponse<String> clash = create("{\"url\":\"https://example.org\",\"alias\":\"spring-sale\"}", OTHER);
++        assertThat(clash.statusCode()).isEqualTo(409);
++        assertThat(clash.body()).contains("\"error\":\"alias_taken\"");
++    }
++
++    @Test
++    void rejectsUnsafeTarget() {
++        HttpResponse<String> response = create("{\"url\":\"javascript:alert(document.cookie)\"}");
++        assertThat(response.statusCode()).isEqualTo(400);
++        assertThat(response.body()).contains("\"error\":\"invalid_url\"");
++    }
++
++    @Test
++    void rejectsUnknownFields() {
++        assertThat(create("{\"url\":\"https://example.com\",\"owner\":\"someone-else\"}").statusCode()).isEqualTo(422);
++    }
++
++    @Test
++    void managementRequiresApiKey() {
++        assertThat(http.post("/api/v1/links", "{\"url\":\"https://example.com\"}").statusCode()).isEqualTo(401);
++        assertThat(create("{\"url\":\"https://e.com\"}", "X-API-Key", "wrong").statusCode()).isEqualTo(401);
++    }
++
++    @Test
++    void linksArePrivateToTheirOwner() {
++        String code = code(create("{\"url\":\"https://example.com\"}"));
++        assertThat(http.get("/api/v1/links/" + code, OTHER).statusCode()).isEqualTo(404);
++        assertThat(http.get("/api/v1/links/" + code + "/stats", OTHER).statusCode()).isEqualTo(404);
++        assertThat(http.send("DELETE", "/api/v1/links/" + code, null, OTHER).statusCode()).isEqualTo(404);
++    }
++
++    @Test
++    void deleteMakesLinkGone() {
++        String code = code(create("{\"url\":\"https://example.com\"}"));
++        assertThat(http.send("DELETE", "/api/v1/links/" + code, null, AUTH).statusCode()).isEqualTo(204);
++        assertThat(http.get("/" + code).statusCode()).isEqualTo(410);
++    }
++
++    @Test
++    void expiredLinkReturnsGone() {
++        String expires = clock.instant().plus(Duration.ofMinutes(5)).toString();
++        String code = code(create("{\"url\":\"https://example.com\",\"expires_at\":\"" + expires + "\"}"));
++        assertThat(http.get("/" + code).statusCode()).isEqualTo(302);
++        clock.advance(Duration.ofSeconds(301));
++        assertThat(http.get("/" + code).statusCode()).isEqualTo(410);
++    }
++
++    @Test
++    void unknownCodeIs404() {
++        HttpResponse<String> response = http.get("/doesNotExist");
++        assertThat(response.statusCode()).isEqualTo(404);
++        assertThat(response.body()).contains("\"error\":\"not_found\"");
++    }
++
++    @Test
++    void idempotencyKeyReplaysOriginal() {
++        String[] headers = {"X-API-Key", "test-key-1", "Idempotency-Key", "order-42"};
++        HttpResponse<String> first = create("{\"url\":\"https://example.com\"}", headers);
++        HttpResponse<String> again = create("{\"url\":\"https://example.com\"}", headers);
++        assertThat(first.statusCode()).isEqualTo(201);
++        assertThat(again.statusCode()).isEqualTo(200);
++        assertThat(code(again)).isEqualTo(code(first));
++        assertThat(create("{\"url\":\"https://example.org\"}", headers).statusCode()).isEqualTo(422);
++    }
++
++    @Test
++    void rateLimitReturns429WithRetryAfter() {
++        String[] limits = {"X-API-Key", "test-key-limits"};
++        for (int i = 0; i < 5; i++) {
++            assertThat(create("{\"url\":\"https://example.com\"}", limits).statusCode()).isEqualTo(201);
++        }
++        HttpResponse<String> limited = create("{\"url\":\"https://example.com\"}", limits);
++        assertThat(limited.statusCode()).isEqualTo(429);
++        int retryAfter = Integer.parseInt(limited.headers().firstValue("Retry-After").orElseThrow());
++        assertThat(retryAfter).isGreaterThanOrEqualTo(1);
++        clock.advance(Duration.ofSeconds(12));
++        assertThat(create("{\"url\":\"https://example.com\"}", limits).statusCode()).isEqualTo(201);
++    }
++
++    @Test
++    void healthAndReadiness() {
++        assertThat(http.get("/healthz").body()).isEqualTo("{\"status\":\"ok\"}");
++        assertThat(http.get("/readyz").statusCode()).isEqualTo(200);
++    }
++
++    @Test
++    void requestIdIsPropagated() {
++        HttpResponse<String> echoed = http.get("/healthz", "X-Request-ID", "abc123");
++        assertThat(echoed.headers().firstValue("X-Request-ID")).hasValue("abc123");
++        assertThat(http.get("/healthz").headers().firstValue("X-Request-ID")).isPresent();
++    }
++
++    @Test
++    void homePageIsServed() {
++        HttpResponse<String> home = http.get("/");
++        assertThat(home.statusCode()).isEqualTo(200);
++        assertThat(home.body()).contains("URL Shortener", "/api/v1/links");
++    }
++}
++
+--- /dev/null
++++ b/src/test/java/com/example/shortener/integration/OpenApiExportTest.java
+@@ -1,0 +1,30 @@
++package com.example.shortener.integration;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import com.example.shortener.support.Http;
++import com.example.shortener.support.IntegrationTest;
++import java.io.IOException;
++import java.net.http.HttpResponse;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import org.junit.jupiter.api.Test;
++import org.springframework.boot.test.web.server.LocalServerPort;
++
++/** Exports the live OpenAPI contract to target/openapi.json, so documentation cannot drift from code. */
++@IntegrationTest
++class OpenApiExportTest {
++
++    @LocalServerPort
++    int port;
++
++    @Test
++    void exportsTheOpenApiContract() throws IOException {
++        HttpResponse<String> response = new Http(port).get("/v3/api-docs");
++        assertThat(response.statusCode()).isEqualTo(200);
++        assertThat(response.body()).contains("\"openapi\":\"3", "/api/v1/links");
++        Files.createDirectories(Path.of("target"));
++        Files.writeString(Path.of("target", "openapi.json"), response.body());
++    }
++}
++

@@ -1,0 +1,8 @@
+# Allowlist for documented placeholders and the secret scanner's own test fixtures only.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Placeholder API keys in docs/examples and the policy tests' deliberately fake secrets"
+paths = ['''src/test/java/io/agentflow/PolicyTest\.java''', '''^runs/''', '''(^|/)target/''']
+regexes = ['''change-me''', '''dev-key''', '''smoke-key''', '''test-key-[a-z0-9]+''']

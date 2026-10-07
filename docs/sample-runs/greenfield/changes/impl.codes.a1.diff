@@ -1,0 +1,92 @@
+--- /dev/null
++++ b/src/main/java/com/example/shortener/service/CodeGenerator.java
+@@ -1,0 +1,41 @@
++package com.example.shortener.service;
++
++import com.example.shortener.domain.Errors;
++import java.security.SecureRandom;
++import java.util.Locale;
++import java.util.Set;
++import java.util.regex.Pattern;
++import org.springframework.stereotype.Component;
++
++/** Random base62 short codes and custom-alias rules. */
++@Component
++public class CodeGenerator {
++
++    static final String ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
++    private static final Pattern ALIAS = Pattern.compile("[A-Za-z0-9_-]{3,32}");
++    /** Paths the service owns; an alias must never shadow them. */
++    static final Set<String> RESERVED = Set.of("api", "healthz", "readyz", "v3", "swagger-ui", "admin",
++            "index.html", "favicon.ico");
++
++    private final SecureRandom random = new SecureRandom();
++
++    /** Random rather than sequential, so the code space cannot be enumerated. */
++    public String generate(int length) {
++        StringBuilder sb = new StringBuilder(length);
++        for (int i = 0; i < length; i++) {
++            sb.append(ALPHABET.charAt(random.nextInt(ALPHABET.length())));
++        }
++        return sb.toString();
++    }
++
++    public String validateAlias(String alias) {
++        if (alias == null || !ALIAS.matcher(alias).matches()) {
++            throw new Errors.InvalidAlias("alias must be 3-32 characters of letters, digits, '-' or '_'");
++        }
++        if (RESERVED.contains(alias.toLowerCase(Locale.ROOT))) {
++            throw new Errors.InvalidAlias("alias '" + alias + "' is reserved");
++        }
++        return alias;
++    }
++}
++
+--- /dev/null
++++ b/src/test/java/com/example/shortener/unit/CodeGeneratorTest.java
+@@ -1,0 +1,45 @@
++package com.example.shortener.unit;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++
++import com.example.shortener.domain.Errors;
++import com.example.shortener.service.CodeGenerator;
++import java.util.HashSet;
++import java.util.Set;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
++
++class CodeGeneratorTest {
++
++    private final CodeGenerator codes = new CodeGenerator();
++
++    @Test
++    void generatesBase62CodesOfTheRequestedLength() {
++        assertThat(codes.generate(9)).hasSize(9).matches("[0-9A-Za-z]{9}");
++    }
++
++    @Test
++    void codesAreNotSequential() {
++        Set<String> seen = new HashSet<>();
++        for (int i = 0; i < 500; i++) {
++            seen.add(codes.generate(7));
++        }
++        assertThat(seen).hasSize(500);
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"abc", "spring-sale", "Q4_promo", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
++    void acceptsValidAliases(String alias) {
++        assertThat(codes.validateAlias(alias)).isEqualTo(alias);
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"ab", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "has space", "emoji🙂", "../etc", "API",
++        "healthz"})
++    void rejectsInvalidOrReservedAliases(String alias) {
++        assertThatThrownBy(() -> codes.validateAlias(alias)).isInstanceOf(Errors.InvalidAlias.class);
++    }
++}
++

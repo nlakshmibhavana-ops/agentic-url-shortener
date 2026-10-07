@@ -1,0 +1,328 @@
+{
+  "openapi" : "3.1.0",
+  "info" : {
+    "title" : "OpenAPI definition",
+    "version" : "v0"
+  },
+  "servers" : [ {
+    "url" : "http://127.0.0.1:34825",
+    "description" : "Generated server url"
+  } ],
+  "paths" : {
+    "/api/v1/links" : {
+      "post" : {
+        "tags" : [ "link-controller" ],
+        "operationId" : "create",
+        "parameters" : [ {
+          "name" : "X-API-Key",
+          "in" : "header",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "Idempotency-Key",
+          "in" : "header",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/CreateLinkRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/LinkResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/{code}" : {
+      "get" : {
+        "tags" : [ "redirect-controller" ],
+        "operationId" : "follow",
+        "parameters" : [ {
+          "name" : "code",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "Referer",
+          "in" : "header",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "User-Agent",
+          "in" : "header",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK"
+          }
+        }
+      }
+    },
+    "/readyz" : {
+      "get" : {
+        "tags" : [ "health-controller" ],
+        "operationId" : "readyz",
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz" : {
+      "get" : {
+        "tags" : [ "health-controller" ],
+        "operationId" : "healthz",
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/links/{code}" : {
+      "get" : {
+        "tags" : [ "link-controller" ],
+        "operationId" : "get",
+        "parameters" : [ {
+          "name" : "X-API-Key",
+          "in" : "header",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "code",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/LinkResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete" : {
+        "tags" : [ "link-controller" ],
+        "operationId" : "delete",
+        "parameters" : [ {
+          "name" : "X-API-Key",
+          "in" : "header",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "code",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/links/{code}/stats" : {
+      "get" : {
+        "tags" : [ "link-controller" ],
+        "operationId" : "stats",
+        "parameters" : [ {
+          "name" : "X-API-Key",
+          "in" : "header",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "code",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "days",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int32",
+            "default" : 30
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/StatsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components" : {
+    "schemas" : {
+      "CreateLinkRequest" : {
+        "type" : "object",
+        "properties" : {
+          "url" : {
+            "type" : "string",
+            "maxLength" : 2048,
+            "minLength" : 0
+          },
+          "alias" : {
+            "type" : "string",
+            "maxLength" : 32,
+            "minLength" : 3
+          },
+          "expires_at" : {
+            "type" : "string",
+            "format" : "date-time"
+          }
+        },
+        "required" : [ "url" ]
+      },
+      "LinkResponse" : {
+        "type" : "object",
+        "properties" : {
+          "code" : {
+            "type" : "string"
+          },
+          "short_url" : {
+            "type" : "string"
+          },
+          "target_url" : {
+            "type" : "string"
+          },
+          "created_at" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "expires_at" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "click_count" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }
+      },
+      "DailyClicks" : {
+        "type" : "object",
+        "properties" : {
+          "date" : {
+            "type" : "string"
+          },
+          "clicks" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }
+      },
+      "ReferrerCount" : {
+        "type" : "object",
+        "properties" : {
+          "host" : {
+            "type" : "string"
+          },
+          "clicks" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }
+      },
+      "StatsResponse" : {
+        "type" : "object",
+        "properties" : {
+          "code" : {
+            "type" : "string"
+          },
+          "total_clicks" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "daily" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/DailyClicks"
+            }
+          },
+          "top_referrers" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/ReferrerCount"
+            }
+          }
+        }
+      }
+    }
+  }
+}
