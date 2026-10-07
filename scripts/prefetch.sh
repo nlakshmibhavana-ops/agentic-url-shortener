@@ -5,13 +5,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-for src in playbooks/shortener/files fixtures/linkly; do
-  name=$(basename "$(dirname "$src")")/$(basename "$src")
-  echo "prefetching dependencies for $name ..."
+for entry in "playbooks/shortener/files:CodeGeneratorTest" "fixtures/linkly:LinkApiTest"; do
+  src=${entry%%:*}
+  one_test=${entry##*:}
+  echo "prefetching dependencies for $src ..."
   cp -r "$src" "$tmp/p"
-  (cd "$tmp/p" && mvn -q -B clean test-compile org.apache.maven.plugins:maven-checkstyle-plugin:3.6.0:check \
-      && mvn -q -B package -DskipTests && mvn -q -B test -Dtest=NoSuchTest -Dsurefire.failIfNoSpecifiedTests=false \
-      && mvn -q -B surefire:test -Dtest=NoSuchTest -Dsurefire.failIfNoSpecifiedTests=false) >/dev/null
+  # Real test runs: Surefire only resolves its JUnit provider when there are tests to execute.
+  (cd "$tmp/p" \
+      && mvn -q -B clean test-compile org.apache.maven.plugins:maven-checkstyle-plugin:3.6.0:check \
+      && mvn -q -B package \
+      && mvn -q -B surefire:test -Dtest="$one_test" -Djacoco.skip=true) >/dev/null
   rm -rf "$tmp/p"
 done
 echo "local Maven repository is warm; runs can build offline"
